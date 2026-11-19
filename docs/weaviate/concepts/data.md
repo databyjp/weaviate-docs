@@ -11,7 +11,7 @@ import SkipLink from '/src/components/SkipValidationLink'
 
 Each data object in Weaviate belongs to a `collection` and has one or more `properties`.
 
-Weaviate stores `data objects` in class-based collections. Data objects are represented as JSON-documents. Objects normally include a `vector` that is derived from a machine learning model. The vector is also called an `embedding` or a `vector embedding`.
+Weaviate stores `data objects` in class-based collections. Data objects are represented as JSON-documents. Objects can include vector representations derived from machine learning models. These are also called `embeddings` or `vector embeddings`; collections can also store objects without vectors.
 
 Each collection contains objects of the same `class`. The objects are defined by a common `schema`.
 
@@ -29,7 +29,7 @@ flowchart LR
 
         subgraph vector ["Vector Search"]
             direction TB
-            VectorIndex["Vector Index"]
+            VectorIndex["Optional Vector Index(es)"]
             IndexStructure["Index Structure"]
             VectorCache["Vector Cache"]
         end
@@ -112,7 +112,7 @@ Imagine we need to store information about an author named Alice Munro. In JSON 
 
 ### Vectors
 
-You can also attach `vector` representations to your data objects. Vectors are arrays of numbers that are stored under the `"vector"` property.
+You can also attach vector representations to your data objects. In the legacy single-vector form shown below, an array of numbers is stored under the `"vector"` property.
 
 In this example, the `Alice Munro` data object has a small vector. The vector is some information about Alice, maybe a story or an image, that a machine learning model has transformed into an array of numerical values.
 
@@ -190,11 +190,13 @@ The collection looks like this:
 }]
 ```
 
-Every collection has its own vector space. This means that different collections can have different embeddings of the same object.
+A collection can have no vector configuration, a legacy single-vector configuration, or named-vector configurations with independent vector spaces. Different collections or named vectors can therefore hold different embeddings of the same object. From v1.40, creating a collection with no vector parameters creates a vectorless collection; explicitly configuring self-provided vectors is a different case. Client-supplied creation settings determine which case applies, and existing collections are unchanged. See [vector configuration defaults](../config-refs/collections.mdx#no-vector).
+
+The diagram above is schematic: vector indexes are optional, and named vectors have their own index configurations.
 
 ### UUIDs
 
-Every object stored in Weaviate has a [UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier). The UUID guarantees uniqueness across all collections.
+Every object stored in Weaviate has a [UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier). Object identity is scoped to the collection and, for multi-tenant collections, the tenant. The same UUID can exist in another collection or tenant.
 
 You can [use a deterministic UUID](../manage-objects/import.mdx#specify-an-id-value) to ensure that the same object always has the same UUID. This is useful when you want to update an object without changing its UUID.
 
@@ -208,9 +210,9 @@ import CrossReferencePerformanceNote from '/_includes/cross-reference-performanc
 
 <CrossReferencePerformanceNote />
 
-If data objects are related, you can use [cross-references](../manage-collections/cross-references.mdx) to represent the relationships. Cross-references in Weaviate are like links that help you retrieve related information. Cross-references capture relationships, but they do not change the vectors of the underlying objects.
+If data objects are related, you can use [cross-references](../manage-collections/cross-references.mdx) to represent the relationships. Cross-references in Weaviate are like links that help you retrieve related information. Cross-references normally do not change object embeddings. A configured reference-based vectorizer, such as [`ref2vec-centroid`](../modules/ref2vec-centroid.md), is an exception.
 
-To create a reference, use a property from one collection to specify the value of a related property in the other collection.
+A reference property points to a target object by its collection and UUID, rather than joining objects by matching property values.
 
 #### Cross-reference example
 
@@ -241,8 +243,8 @@ The Paul Krugman `Author` object adds a new property, `writesFor`, to capture th
 // highlight-start
         "writesFor": [
             {
-                "beacon": "weaviate://localhost/32d5a368-ace8-3bb7-ade7-9f7ff03eddb6",
-                "href": "/v1/objects/32d5a368-ace8-3bb7-ade7-9f7ff03eddb6"
+                "beacon": "weaviate://localhost/Publication/32d5a368-ace8-3bb7-ade7-9f7ff03eddb6",
+                "href": "/v1/objects/Publication/32d5a368-ace8-3bb7-ade7-9f7ff03eddb6"
             }
         ],
 // highlight-end
@@ -251,7 +253,7 @@ The Paul Krugman `Author` object adds a new property, `writesFor`, to capture th
 }
 ```
 
-The value of the `beacon` sub-property is the `id` value from the New York Times `Publication` object.
+The `beacon` contains the target collection and the `id` of the New York Times `Publication` object.
 
 Cross-reference relationships are directional. To make the link bi-directional, update the `Publication` collection to add a `hasAuthors` property points back to the `Author` collection.
 
@@ -261,6 +263,8 @@ import MultiVectorSupport from '/_includes/multi-vector-support.mdx';
 
 <MultiVectorSupport />
 
+Named vectors use a name-to-representation map (`vectors` in the REST object representation). Each named representation can itself be a matrix of vectors, such as token or image-patch embeddings for late interaction. A matrix within one target is different from several independently configured named vectors. See [multi-vector configuration](../manage-collections/vector-config.mdx#define-multi-vector-embeddings-eg-colbert-colpali) for supported indexes and setup.
+
 #### Adding a named vector after collection creation
 
 import AddNamedVectors from '/_includes/feature-notes/add-named-vectors.mdx';
@@ -269,11 +273,11 @@ import AddNamedVectors from '/_includes/feature-notes/add-named-vectors.mdx';
 
 A named vector can be added to an existing collection definition after collection creation. This allows you to add new vector representations for objects without having to delete and recreate the collection.
 
-When you add a new named vector to an existing collection definition, it's important to understand that **existing objects' new named vector will remain unpopulated**. Only objects created after the named vector addition will receive these new vector embeddings.
+Adding a named-vector definition **does not automatically populate it for existing objects**. New objects can receive the embedding according to the new vector configuration; existing objects require explicit population.
 
 This prevents any unintended side effects, such as incurring large vectorization time or costs for all existing objects in a collection.
 
-If you want to populate the new named vector for existing objects, delete and reinsert the objects manually. This will trigger the vectorization process for the new named vector.
+To populate existing objects, you can generate the embeddings explicitly and [update their named-vector values](../manage-objects/update.mdx#update-object-vector) without deleting the objects. Re-importing is another option. An empty update or resending unchanged properties does not necessarily trigger generation of missing vectors.
 
 <!-- TODO: I wonder we should show an example - maybe once the vectorizer syntax is updated with 1.32 -->
 
@@ -298,7 +302,7 @@ Note that for multi-tenant collections, deletions can only occur for active tena
 
 ## Data Schema
 
-Weaviate requires a data schema before you add data. However, you don't have to create a data schema manually. If you don't provide one, Weaviate generates a schema based on the incoming data.
+Weaviate requires a data schema before you add data. However, you don't have to create a data schema manually. When auto-schema is enabled, Weaviate can generate a schema based on the incoming data if you have not provided one.
 
 import SchemaDef from '/_includes/definition-schema.md';
 
@@ -465,7 +469,7 @@ Support for backing up `inactive` tenants was added in `v1.37.0`, and backported
 
 ### Tenancy and IDs
 
-Each tenancy is like a namespace, so different tenants could, in theory, have objects with the same IDs. To avoid naming problems, object IDs in multi-tenant clusters combine the tenant ID and the object ID to create an ID that is unique across tenants.
+Different tenants can contain objects with the same UUID. Specify the tenant together with the collection and object UUID when accessing multi-tenant objects; Weaviate does not rewrite the UUID into a composite tenant/object ID.
 
 ### Tenancy and cross-references
 
@@ -516,9 +520,9 @@ For more information, see the following:
 
 * The schema defines collections and properties.
 * Collections contain data objects that are describe in JSON documents.
-* Data objects can contain a vector and properties.
+* Data objects contain properties and can have optional vector representations.
 * Vectors come from machine learning models.
-* Different collections represent different vector spaces.
+* Collections can have no vector space, a legacy single-vector space, or independent named-vector spaces.
 * Cross-references link objects between schemas.
 * Multi-tenancy isolates data for each tenant.
 

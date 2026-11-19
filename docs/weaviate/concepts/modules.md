@@ -16,26 +16,22 @@ Weaviate has a modularized structure. Functionality such as vectorization or bac
 The core of Weaviate, without any modules attached, is a pure vector-native database.
 [![Weaviate modules introduction](./img/weaviate-module-diagram.svg "Weaviate Module Diagram")](./img/weaviate-module-diagram.svg)
 
-Data is stored in Weaviate as the combination of an object and its vector, and these vectors are searchable by the provided [vector index algorithm](../concepts/indexing/vector-index.md). Without any vectorizer modules attached, Weaviate does not know how to *vectorize* an object, i.e. *how* to calculate the vectors given an object.
+Weaviate stores objects with optional vector representations. Configured vectors can be searched with a [vector index](../concepts/indexing/vector-index.md). Without any vectorizer modules attached, Weaviate does not know how to *vectorize* an object, i.e. *how* to calculate the vectors given an object.
 
 Depending on the type of data you want to store and search (text, images, etc.), and depending on the use case (like search, question answering, etc., depending on language, classification, ML model, training set, etc.), you can choose and attach a vectorizer module that best fits your use case. Or, you can "bring your own" vectors to Weaviate.
 
 This page explains what modules are, and what purpose they serve in Weaviate.
 
+Module enablement at the instance level is separate from selecting a vectorizer for a collection or an integration for a supported query. In core/self-managed Weaviate, API-based integrations are enabled by default from v1.33, but still require applicable provider configuration and credentials. Local inference modules can require explicit enablement and additional services. Module availability does not automatically vectorize a collection: select its vectorizer explicitly. See [module configuration](../configuration/modules.md) for deployment-specific settings.
+
 
 ## Available module types
 
-This graphic displays the available modules for the latest Weaviate version (||site.weaviate_version||) . Modules are grouped into these categories:
-
-- Vectorization modules
-- Vectorization and additional functionality modules
-- Other modules
-
-![Weaviate module ecosystem](./img/weaviate-modules.png "Weaviate module ecosystem")
+Modules include vectorizers, rerankers, readers, generators, and operational integrations such as backups. For maintained catalogs, see [model-provider integrations](../model-providers/index.md) and the [module reference](../modules/index.md).
 
 ### Vectorizer & Ranker modules
 
-Vectorizer modules, like the `text2vec-*`, `multi2vec-*` or `img2vec-*` modules, transform data into vectors. Ranker modules, like the `rerank-*` modules, rank the results.
+Vectorizer modules, like the `text2vec-*`, `multi2vec-*` or `img2vec-*` modules, transform data into vectors. Ranker modules, like the `reranker-*` (for example, `reranker-cohere`) modules, rank the results.
 
 ### Reader & Generator modules
 
@@ -47,11 +43,11 @@ These include those such as `backup-gcs` or `text-spellcheck`.
 
 ## Dependencies
 
-Modules can be dependent on other modules to be present. For example, to use the [`qna-transformers`](../modules/qna-transformers.md) module, *exactly one* text vectorization module is required.
+Modules can depend on capabilities provided by other modules. For example, [`qna-transformers`](../modules/qna-transformers.md) requires a compatible text vectorization module providing `nearText`; configure the appropriate text vectorizer for the collection. See [module configuration](../configuration/modules.md) for multi-vectorizer constraints.
 
 ## Weaviate without modules
 
-Weaviate can also be used without any modules, as pure vector native database and search engine. If you choose not to include any modules, you will need to enter a vector for each data entry. You can then search through the objects by a vector as well.
+Weaviate can be used without optional modules. For vector similarity search without a vectorizer module, configure a vector representation and supply compatible vectors yourself. Objects can also be stored and queried without vectors, for example with keyword search and filters. See [vector configuration](../manage-collections/vector-config.mdx).
 
 ## Custom modules
 
