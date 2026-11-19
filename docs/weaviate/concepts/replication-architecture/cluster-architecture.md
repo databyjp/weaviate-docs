@@ -21,15 +21,15 @@ Weaviate is optimized to run on Kubernetes, especially when operating as a clust
 
 Weaviate uses the [Raft consensus algorithm](https://raft.github.io/) for metadata replication, implemented with Hashicorp's [raft library](https://pkg.go.dev/github.com/hashicorp/raft). Metadata in this context includes collection definition and shard/tenant states.
 
-Raft ensures that metadata changes are consistent across the cluster. A metadata change is forwarded to the leader node, which applies the change to its log before replicating it to the follower nodes. Once a majority of nodes have acknowledged the change, the leader commits the change to the log. The leader then notifies the followers, which apply the change to their logs.
+Raft ensures that metadata changes are consistent across the cluster. A metadata change is forwarded to the leader node, which applies the change to its log before replicating it to the follower nodes. Once a majority of Raft voting members have acknowledged the change, the leader commits the change to the log. The leader then notifies the followers, which apply the change to their logs.
 
-This architecture ensures that metadata changes are consistent across the cluster, even in the event of (a minority of) node failures.
+This architecture ensures that metadata changes are consistent across the cluster, while a majority of Raft voting members can communicate and make progress. Non-voting members do not count toward that majority.
 
 As a result, a Weaviate cluster will include a leader node that is responsible for metadata changes. The leader node is elected by the Raft algorithm and is responsible for coordinating metadata changes.
 
 ## Data replication: Leaderless
 
-Weaviate uses a leaderless architecture for data replication. This means there is no central leader or primary node that will replicate to follower nodes. Instead, all nodes can accept writes and reads from the client, which can offer better availability. There is no single point of failure. A leaderless replication approach, also known as [Dynamo-style](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) data replication (after Amazon's implementation), has been adopted by other open-source projects like [Apache Cassandra](https://cassandra.apache.org).
+Weaviate uses a leaderless architecture for data replication. This means there is no central leader or primary node that will replicate to follower nodes. Instead, all nodes can accept writes and reads from the client, which can offer better availability. Data operations do not depend on a fixed primary, but still need a reachable coordinator and enough eligible replicas of every required shard. A leaderless replication approach, also known as [Dynamo-style](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) data replication (after Amazon's implementation), has been adopted by other open-source projects like [Apache Cassandra](https://cassandra.apache.org).
 
 In Weaviate, a coordination pattern is used to relay a client's read and write requests to the correct nodes. Unlike in a leader-based database, a coordinator node does not enforce any ordering of the operations.
 
@@ -37,9 +37,11 @@ The following illustration shows a leaderless replication design in Weaviate. Th
 
 <p align="center"><img src="/img/docs/replication-architecture/replication-main-quorum.png" alt="Replication Architecture" width="75%"/></p>
 
-The main advantage of a leaderless replication design is improved fault tolerance. Without a leader that handles all requests, a leaderless design offers better availability. In a single-leader design, all writes need to be processed by this leader. If this node cannot be reached or goes down, no writes can be processed. With a leaderless design, all nodes can receive write operations, so there is no risk of one master node failing.
+A leaderless data design avoids routing every write through a fixed primary. Another node can coordinate a request if the entry point and required shard replicas remain available; this is not an unconditional failover guarantee. Metadata changes separately require a Raft voting majority.
 
-On the flipside of high availability, a leaderless database tends to be less consistent. Because there is no leader node, data on different nodes may temporarily be out of date. Leaderless databases tend to be eventually consistent. Consistency in Weaviate is [tunable](./consistency.md), but this occurs at the expense of availability.
+On the flipside of high availability, a leaderless database tends to be less consistent. Because there is no leader node, data on different nodes may temporarily be out of date. Leaderless databases tend to be eventually consistent. Consistency in Weaviate is [tunable](./consistency.md), but stronger acknowledgment requirements can reduce availability.
+
+[Background async replication and read repair](./consistency.md#repairs) attempt to reconcile divergent replica state, subject to conflict policy and successful communication. They are distinct from the acknowledgment threshold of an individual request.
 
 
 ## Replication Factor
@@ -52,7 +54,7 @@ In Weaviate, data replication is enabled and controlled per collection. This mea
 
 The replication factor (RF or n) determines how many copies of data are stored in the distributed setup. A replication factor of 1 means that there is only 1 copy of each data entry in the database setup, in other words there is no replication. A replication factor of 2 means that there are two copies of each data entry, which are present on two different nodes (replicas). Naturally, the replication factor cannot be higher than the number of nodes. Any node in the cluster can act as a coordinating node to lead queries to the correct target node(s).
 
-A replication factor of 3 is commonly used, since this provides a right balance between performance and fault tolerance. An odd number of nodes is generally preferred, as it makes it easier to resolve conflicts. In a 3-node setup, a quorum can be reached with 2 nodes. Therefore the fault tolerance is 1 node. In a 2-node setup, on the other hand, no node failures can be tolerated while still reaching consensus across nodes. In a 4-node setup, respectively, 3 nodes would be required to reach a consensus. Thus, a 3-node setup has a better fault-tolerance to cost ratio than either a 2-node or 4-node setup.
+Data quorum is calculated for the target shard's operation-eligible replica set, not all cluster nodes: `QUORUM = floor(n/2) + 1`. With three eligible replicas, two successful responses satisfy QUORUM, permitting one unavailable replica for that operation. RF=2/QUORUM needs both replicas; RF=4/QUORUM needs three. Odd replica counts can offer useful majority/cost trade-offs, but do not themselves resolve object conflicts or require an odd total cluster size. Metadata progress instead requires a majority of Raft voting members.
 
 <p align="center"><img src="/img/docs/replication-architecture/replication-factor.png" alt="Replication Factor" width="75%"/></p>
 
@@ -62,32 +64,28 @@ On a write operation, the client's request will be sent to any node in the clust
 
 **Steps**
 1. The client sends data to any node, which will be assigned as the coordinator node
-2. The coordinator node sends the data to more than one replica node in the cluster
-3. The coordinator node waits for acknowledgment from a specified proportion (let's call it `x`) of cluster nodes. Starting with v1.18, `x` is [configurable](./consistency.md), and defaults to `QUORUM` nodes.
-4. When `x` ACKs are received by the coordinator node, the write is successful.
+2. The coordinator attempts the write on the routed replicas of the target shard.
+3. The coordinator waits for the required successful acknowledgments from those replicas. Ordinary object writes default to `QUORUM`; see [operation-specific consistency](./consistency.md#tunable-write-consistency).
+4. When the required successful acknowledgments arrive, the request can succeed. Other replicas may still require repair; a failed request can also have partial effects.
 
-As an example, consider a cluster size of 3 with replication factor of 3. So, all nodes in the distributed setup contain a copy of the data. When the client sends new data, this will be replicated to all three nodes.
+As an all-healthy example, consider one shard with three eligible replicas on a three-node cluster. The coordinator attempts the write on all three destinations; QUORUM requires two successful acknowledgments.
 
 <p align="center"><img src="/img/docs/replication-architecture/replication-rf3-size3.png" alt="Replication Factor 3 with cluster size 3" width="75%"/></p>
 
-With a cluster size of 8 and a replication factor of 3, a write operation will not be sent to all 8 nodes, but only to those three containing the replicas. The coordinating node will determine which nodes the data will be written to. Which nodes store which collections (and therefore shards) is determined by the setup of Weaviate, which is known by each node and thus each coordinator node. Where something is replicated is deterministic, so all nodes know on which shard which data will land.
+In an eight-node cluster, one shard with RF=3 normally has three replica destinations, not eight. A collection can span several shards with different replica sets. The coordinator uses current recorded shard placement and read/write eligibility; object-to-shard mapping is separate from shard-to-node placement, which can change through replica movement. The illustration below is a single-shard, all-healthy example.
 
 <p align="center"><img src="/img/docs/replication-architecture/replication-rf3-size8.png" alt="Replication Factor 3 with cluster size 8" width="75%"/></p>
 
 ## Read operations
 
-Read operations are also coordinated by a coordinator node, which directs a query to the correct nodes that contain the data. Since one or more nodes may contain old (stale) data, the read client will determine which of the received data is the most recent before sending it to the user.
+Read operations are routed by a server-side coordinator to replicas of the required shards.
 
-**Steps**
-1. The client sends a query to Weaviate, any node in the cluster that receives the request first will act as the coordinator node
-2. The coordinator node sends the query to more than one replica node in the cluster
-3. The coordinator waits for a response from x nodes. *x is [configurable](./consistency.md) (`ALL`, `QUORUM` or `ONE`, available from v1.18, Get-Object-By-ID type requests have tunable consistency from v1.17).*
-4. The coordinator node resolves conflicting data using some metadata (e.g. timestamp, id, version number)
-5. The coordinator returns the latest data to the client
+- **Object by ID:** the coordinator can compare a full object and replica digests according to the operation's consistency requirement and repair consulted state using timestamps and deletion policy. This does not guarantee a globally newest value; `ONE` can return stale data.
+- **Search:** shard indexes discover candidates. Requested consistency checks on known objects are separate from candidate discovery, and are not a merge of every replica's search results. Do not assume every search path performs the same checks or repairs.
 
-If the cluster size is 3 and the replication factor is also 3, then all nodes can serve the query. The consistency level determines how many nodes will be queried.
+The client receives the server's result; it does not perform replica conflict reconciliation. See [read consistency](./consistency.md#tunable-read-consistency) and [query consistency limitations](./consistency.md#tunable-consistency-and-queries).
 
-If the cluster size is 10 and the replication factor is 3, the 3 nodes which contain that data (collection) can serve queries, coordinated by the coordinator node. The client waits until x (the consistency level) nodes have responded.
+Each shard has its own replica placement, so a multi-shard query can involve more nodes than the collection's replication factor. Read fan-out and acknowledgment requirements are operation-specific, not a count of all cluster nodes.
 
 ## Questions and feedback
 
