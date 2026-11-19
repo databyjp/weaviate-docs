@@ -11,15 +11,13 @@ Weaviate scales well for large projects. Smaller projects, less than 1M objects,
 
 ## Limit available resources
 
-You can set [environment variables](/deploy/configuration/env-vars/index.md) to manage Weaviate's resource usage, as to prevent Weaviate from using all available resources. The following environment variables are available:
+Use [environment variables](/deploy/configuration/env-vars/index.md) to tune Go runtime resource use. These controls are not hard process containment or guarantees against out-of-memory failures:
 
-- [`LIMIT_RESOURCES`](/deploy/configuration/env-vars/index.md#LIMIT_RESOURCES): When set to true, Weaviate automatically limits its resource usage. It sets memory usage to 80% of the total memory and uses all but one CPU core. It overrides any `GOMEMLIMIT` values but respects `GOMAXPROCS` settings.
+- [`LIMIT_RESOURCES`](/deploy/configuration/env-vars/index.md#LIMIT_RESOURCES): With the literal value `true`, Weaviate attempts to derive `GOMAXPROCS` from cgroup CPU quota (v1/v2), respecting an explicit `GOMAXPROCS`. Detection can fail; it does not reserve one host CPU. It also sets a soft Go memory limit at 80% of detected memory, falling back to 80% of system memory if cgroup-aware memory detection fails. This can override `GOMEMLIMIT`.
+- [`GOMEMLIMIT`](/deploy/configuration/env-vars/index.md#GOMEMLIMIT): A soft Go runtime memory limit that influences garbage collection. It is not total process RSS or a hard container limit; mapped files, non-Go allocations, and operating-system memory need separate headroom.
+- [`GOMAXPROCS`](/deploy/configuration/env-vars/index.md#GOMAXPROCS): Limits simultaneous execution of Go code. It neither reserves physical CPU cores nor caps the process's total OS threads.
 
-- [`GOMEMLIMIT`](/deploy/configuration/env-vars/index.md#GOMEMLIMIT): This sets the memory limit for the Go runtime, which should be around 80-90% of the total memory available for Weaviate. It controls the aggressiveness of the Garbage Collector as memory usage approaches this limit.
-
-- [`GOMAXPROCS`](/deploy/configuration/env-vars/index.md#GOMAXPROCS): This sets the maximum number of threads for concurrent execution. If set, it's respected by `LIMIT_RESOURCES`, allowing users to specify the exact number of CPU cores Weaviate should use.
-
-These settings help in optimizing Weaviate's performance by balancing resource utilization with the available system resources.
+Monitor actual memory and CPU use, leave headroom for concurrent work, and tune import pressure as needed. Runtime limits can reduce memory pressure but cannot prevent every OOM.
 
 
 ## The role of CPUs
@@ -30,7 +28,7 @@ The CPU has a direct effect on query and import speed, but does not affect datas
 
 Vector search is the most CPU intensive process in Weaviate operations. Queries are CPU-bound, but imports are also CPU-bound because imports rely on vector search for indexing. Weaviate uses the HNSW (Hierarchical Navigable Small World) algorithm to index vectors. You can [tune the HNSW index](../config-refs/indexing/vector-index.mdx) on a per collection basis in order to maximize performance for your primary use case.
 
-To use multiple CPUs efficiently, create multiple shards for your collection. For the fastest imports, create multiple shards even on a single node.
+Multiple shards can expose import parallelism, including on one node, but add overhead. Benchmark shard counts for your chosen indexes and workload rather than assuming more shards always produce the fastest import.
 
 Each insert, or search, is single-threaded. However, if you make multiple searches or inserts at the same time, Weaviate can make use of multiple threads. [Batch inserts](/weaviate/manage-objects/import) use multiple threads to process data in parallel.
 
@@ -103,15 +101,17 @@ To avoid out-of-memory issues during imports, set `LIMIT_RESOURCES` to `True` or
 
 The following tactics can help to reduce Weaviate's memory usage:
 
+Current choices include [PQ, BQ, SQ, and RQ quantization](./vector-quantization.md), with index-specific compatibility and recall/resource trade-offs. [Index selection](./indexing/vector-index.md) also matters: flat avoids a graph for small datasets, dynamic changes its footprint when it upgrades to HNSW, and HFresh uses disk-backed postings with built-in compression. These choices are distinct from compressing HNSW graph connections. Use the linked configuration guides and measure your workload rather than assuming one universally best method.
+
 - **Use vector compression**. Product quantization (PQ) is a technique that reduces the size of vectors. Vector compression impacts recall performance, so we recommend testing PQ on your dataset before using it in production. <br/><br/> For more information, see [Product Quantization](/weaviate/concepts/vector-quantization). <br/> To configure PQ, see [Compression](../configuration/compression/pq-compression.md).
 
-- **Reduce the dimensionality of your vectors.** The most effective approach to reducing memory size, is to reduce the number of dimensions per vector. If you have high dimension vectors, consider using a model that uses fewer dimensions. For example, a model that has 384 dimensions uses far less memory than a model with 1536 dimensions.
+- **Reduce the dimensionality of your vectors.** Reducing dimensions can reduce vector payload memory, but total savings and search quality depend on the model, representation, indexes, and other allocations. If you have high dimension vectors, consider using a model that uses fewer dimensions. For example, a model that has 384 dimensions uses far less memory than a model with 1536 dimensions.
 
 - **Reduce the number of [`maxConnections`](../config-refs/indexing/vector-index.mdx) in your HNSW index settings**. Each object in memory has up to `maxConnections` connections. Each of those connections uses 8-10B of memory. To reduce the overall memory footprint, reduce `maxConnections`.
 
 Reducing `maxConnections` adversely affects HNSW recall performance. To mitigate this effect, increase one or both of the `efConstruction` and `ef` parameters.
 
-- Increasing `efConstruction` increases import time without affecting query times.
+- Increasing `efConstruction` increases construction work and can change graph quality, which can also affect query behavior; it is not a direct query-time search-budget setting.
 - Increasing `ef` increases query times without affecting import times.
 
 - **Use a vector cache that is smaller than the total amount of your vectors (not recommended)**. This strategy is described under [Vector Cache](#vector-cache) below. It has a significant performance impact, and is only recommended in specific, limited situations.
