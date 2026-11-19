@@ -25,12 +25,14 @@ Data objects are replicated using a [leaderless design](./cluster-architecture.m
 These designs reflect the trade-off between consistency and availability that is described in the [CAP Theorem](./index.md#cap-theorem).
 
 :::tip Rule of thumb on consistency
-The strength of consistency can be determined by applying the following conditions:
-* If r + w > n, then the system is strongly consistent.
-    * r is the consistency level of read operations
-    * w is the consistency level of write operations
+For an identified object, the following conditions describe overlap between the replicas participating in reads and writes:
+* If r + w > n, then the read and write replica sets overlap.
+    * r is the number of replica responses required by the read consistency level
+    * w is the number of replica acknowledgments required by the write consistency level
     * n is the replication factor (number of replicas)
-* If r + w &lt;= n, then eventual consistency is the best that can be reached in this scenario.
+* If r + w &lt;= n, then the read and write replica sets may not overlap.
+
+Quorum overlap is not a database-wide guarantee of fresh or complete search results. See [Tunable consistency and queries](#tunable-consistency-and-queries) for search-specific behavior.
 :::
 
 ## Cluster metadata
@@ -112,13 +114,13 @@ The main reason for introducing configurable write consistency in v1.18 is becau
 
 ### Tunable read consistency
 
-Read operations are GET requests to data objects in Weaviate. Like write, read consistency is tunable, to `ONE`, `QUORUM` (default) or `ALL`.
+For direct object-by-ID reads, consistency is tunable to `ONE`, `QUORUM` (default) or `ALL`. Search uses different defaults and response semantics; see [Tunable consistency and queries](#tunable-consistency-and-queries).
 
 :::note
 Prior to `v1.18`, read consistency was tunable only for [requests that obtained an object by id](../../manage-objects/read.mdx#get-an-object-by-id), and all other read requests had a consistency of `ALL`.
 :::
 
-The following consistency levels are applicable to most read operations:
+Tunable read consistency is supported by the following APIs:
 
 - Starting with `v1.18`, consistency levels are applicable to REST endpoint operations.
 - Starting with `v1.19`, consistency levels are applicable to GraphQL `Get` requests.
@@ -126,7 +128,7 @@ The following consistency levels are applicable to most read operations:
 
 * **ONE** - a read response must be returned by at least one replica. This is the fastest (most available), but least consistent option.
 * **QUORUM** - a response must be returned by `QUORUM` amount of replica nodes. `QUORUM` is calculated as _n / 2 + 1_, where _n_ is the number of replicas (replication factor). For example, using a replication factor of 6, the quorum is 4, which means the cluster can tolerate 2 replicas down.
-* **ALL** - a read response must be returned by all replicas. The read operation will fail if at least one replica fails to respond. This is the most consistent, but 'slowest' (least available) option.
+* **ALL** - a direct object-by-ID read requires a response from all replicas and fails if at least one replica fails to respond. This requires the most replica responses and is the least available option. Search consistency-check failures do not necessarily fail the request; see [Tunable consistency and queries](#tunable-consistency-and-queries).
 
 Examples:
 * **ONE**<br/>
@@ -153,19 +155,20 @@ Depending on the desired tradeoff between consistency and speed, below are three
 
 ### Tunable consistency and queries
 
-Note that tunable consistency levels for read operations do not affect consistency of the list of objects returned by a query. In other words, the list of object UUIDs returned by a query depends only on the coordinator node's (and any other required shards') local index, and is independent of the read consistency level.
+Search candidate discovery and replica consistency checking are separate steps. Increasing the read consistency level to `ALL` does not guarantee that all replicas' candidate sets are merged into a fresh or complete result set. Candidate selection depends on search routing and the indexes used to answer the query.
 
-This is due to the fact that each query is performed by the coordinator node and any other shards required to answer the query. Even if the read consistency level is set to `ALL`, it does not mean that multiple replicas will be queried and the results merged together.
+In Weaviate `v1.40.5`, ordinary object and vector search default to `ONE` when no consistency override is supplied. For replicated collections, GraphQL `Get` accepts the [`consistencyLevel` argument](../../api/graphql/get.md#consistency-levels).
 
-Where the read consistency level is applied is in retrieving the identified objects from the replicas. For example, if the read consistency level is set to `ALL`, the coordinator node will wait for all replicas to return the identified objects. And if the read consistency level is set to `ONE`, the coordinator node may simply return the objects from itself.
+For search paths that perform consistency checking:
 
-In other words, the read consistency level only affects which versions of the objects are retrieved, but it does not lead to a more (or less) consistent query result.
+- **Candidate discovery:** Search selects objects before checking their consistency across replicas.
+- **Checking and repair:** Weaviate can compare selected objects with other replicas and repair stale replicas.
+- **Response objects:** Repair does not replace the already selected response objects with newer versions, because those versions may not satisfy the original filters. A response object can retain its older contents even after successful repair. Therefore, `isConsistent=true` is not proof that the response contains the newest replica version.
+- **Failure reporting:** Consistency-check failures can be logged while search results are still returned without a request error. For example, an object search using `QUORUM` or `ALL` can return an object marked `isConsistent=false` when the check cannot reach enough replicas. These levels are not a fail-closed search guarantee.
 
-:::note When might this occur?
+These behaviors are covered by the released [search repair test](https://github.com/weaviate/weaviate/blob/2ef7611e2c70612b85a134d92e6eed5fd6791b8c/usecases/replica/finder_test.go#L1034-L1094) and [unreachable-replica test](https://github.com/weaviate/weaviate/blob/2ef7611e2c70612b85a134d92e6eed5fd6791b8c/adapters/repos/db/index_test.go#L457-L511). They do not establish identical behavior for every search route: for example, the single-local-shard vector-search fast path can return before consistency checking.
 
-By default, Weaviate writes to all nodes on an insert/update/delete. So, most of the time this won't matter as all shards will have identical local indexes to each other. This is a rare care which may only occur if there is a problem, such as a node being down, or there is a network problem.
-
-:::
+Do not apply these search semantics to direct object-by-ID reads or assume that every UUID-discovery operation uses the same path. Async vector indexing and asynchronous replica repair are also separate mechanisms; a search consistency setting alone does not establish application authorization freshness.
 
 ### Tenant states and data objects
 

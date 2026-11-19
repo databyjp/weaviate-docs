@@ -140,12 +140,12 @@ import GraphQLGroupBy from '/_includes/code/graphql.get.groupby.mdx';
 
 ### Consistency levels
 
-Where replication is enabled, you can specify a `consistency` argument with a `Get` query. The available options are:
-- `ONE`
-- `QUORUM` (Default)
+Where replication is enabled, you can specify a `consistencyLevel` argument with a GraphQL `Get` query. The available options are:
+- `ONE` (default for ordinary search when no override is supplied)
+- `QUORUM`
 - `ALL`
 
-Read more about consistency levels [here](../../concepts/replication-architecture/consistency.md).
+A higher consistency level does not guarantee fresh or complete search results, the newest returned object version, or request failure when a consistency check fails. In search paths that check and repair replicas, `isConsistent=true` does not prove that the response object is the newest version. See [search-specific consistency behavior](../../concepts/replication-architecture/consistency.md#tunable-consistency-and-queries).
 
 import GraphQLGetConsistency from '/_includes/code/graphql.get.consistency.mdx';
 

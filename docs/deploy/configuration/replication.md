@@ -114,7 +114,7 @@ Tweak these settings based on your cluster size and network latency to achieve o
 
 ## How to use: Queries
 
-When you add (write) or query (read) data, one or more replica nodes in the cluster will respond to the request. How many nodes need to send a successful response and acknowledgment to the coordinator node depends on the `consistency_level`. Available [consistency levels](/weaviate/concepts/replication-architecture/consistency.md) are `ONE`, `QUORUM` (replication_factor / 2 + 1) and `ALL`.
+When you add (write) or read an object by ID, the number of replica responses or acknowledgments required by the coordinator depends on the `consistency_level`. Available [consistency levels](/weaviate/concepts/replication-architecture/consistency.md) are `ONE`, `QUORUM` (replication_factor / 2 + 1) and `ALL`. Search has different response semantics; see [Tunable consistency and queries](/weaviate/concepts/replication-architecture/consistency.md#tunable-consistency-and-queries).
 
 The `consistency_level` can be specified at query time:
 
@@ -123,9 +123,11 @@ The `consistency_level` can be specified at query time:
 curl "http://localhost:8080/v1/objects/{ClassName}/{id}?consistency_level=ONE"
 ```
 
-:::note
+:::note Historical behavior in v1.17 and v1.18
 In v1.17, only [read queries that get data by ID](/weaviate/manage-objects/read.mdx#get-an-object-by-id) had a tunable consistency level. All other object-specific REST endpoints (read or write) used the consistency level `ALL`. Starting with v1.18, all write and read queries are tunable to either `ONE`, `QUORUM` (default) or `ALL`. GraphQL endpoints use the consistency level `ONE` (in both versions).
 :::
+
+For current GraphQL `Get` queries on replicated collections, use the [`consistencyLevel` argument](/weaviate/api/graphql/get.md#consistency-levels). In `v1.40.5`, ordinary search defaults to `ONE` when no override is supplied. Raising this level does not guarantee fresh or complete search results, the newest returned object version, or fail-closed behavior; see the [search consistency caveats](/weaviate/concepts/replication-architecture/consistency.md#tunable-consistency-and-queries).
 
 import QueryReplication from '/\_includes/code/replication.get.object.by.id.mdx';
 
