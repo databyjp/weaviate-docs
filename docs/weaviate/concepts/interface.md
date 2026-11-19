@@ -8,7 +8,7 @@ image: og/docs/concepts.jpg
 
 You can manage and use Weaviate through its APIs. Weaviate has RESTful, GraphQL, and gRPC APIs. The client libraries broadly mirror this API surface, although feature coverage can vary by language; see the [client library pages](/weaviate/client-libraries/index.mdx) for what each one supports. Some clients, e.g. the Python client, have additional functionality, such as full schema management and batching operations. This way, Weaviate is easy to use in custom projects. Additionally, the APIs are intuitive, so it is easy to integrate into your existing data landscape.
 
-This page contains information on how Weaviate's APIs are designed, and how you can use Weaviate Console to search through your Weaviate instance with GraphQL.
+This page explains API choices and design. Prefer current [client libraries](/weaviate/client-libraries/index.mdx) for new applications. Retained GraphQL examples describe legacy functionality only where GraphQL is enabled and available; see the [migration guide](../api/graphql/migration.mdx).
 
 ## API Design
 
@@ -18,17 +18,14 @@ User Experience (UX) is one of our most valuable principles. Weaviate should be 
 
 The UX of Weaviate's APIs is designed following the UX Honeycomb usability rules, defined by Peter Morville.
 
-### RESTful API and GraphQL API
+### Choosing an API
 
-Weaviate has both a RESTful API and a GraphQL API. Currently, there is no feature parity between both APIs (this will be implemented later, there is an [issue](https://github.com/weaviate/weaviate/issues/1540) on GitHub). The RESTful APIs are mostly used for DB management and CRUD operations. The GraphQL API is mostly used to access data objects in Weaviate, whether it's a simple lookup or a combination of scalar and vector search. The APIs support the following user needs, roughly speaking:
+- **Management and object CRUD**: use REST directly or through a client library.
+- **Search and aggregation**: current client libraries primarily use gRPC. Feature coverage varies by language and client version.
+- **HTTP-only stacks**: the REST Search API offers JSON search and aggregation endpoints, but remains **preview** and is not a promise of parity with GraphQL or every client feature. See the [API overview](../api/index.mdx) and [migration guidance](../api/graphql/migration.mdx).
+- **Existing GraphQL integrations**: check deployment availability and the deprecation guidance below before relying on them.
 
-- **Adding, retrieving, updating and deleting data CRUD** -> RESTful API
-- **Weaviate management operations** -> RESTful API
-- **Data search** -> GraphQL API
-- **Explorative data search** -> GraphQL API
-- **Data analysis (meta data)** -> GraphQL API
-- **Near real time on very large datasets in production** -> Client libraries (Python, Go, Java, JavaScript, C#) using both APIs under the hood
-- **Easy to integrate in applications** -> Client libraries (Python, Go, Java, JavaScript, C#) using both APIs under the hood
+Client libraries combine the appropriate transports behind language-specific methods; they are not limited to a REST-plus-GraphQL model. There is no general commitment to eventual parity across all APIs.
 
 ## GraphQL
 
@@ -38,7 +35,7 @@ import GraphQLDeprecation from '/_includes/graphql-deprecation.mdx';
 
 ### Why GraphQL?
 
-We have chosen to use a GraphQL API, for multiple reasons:
+The following explains the historical GraphQL design rationale, not a recommendation over current clients. These examples require GraphQL to be enabled and supported by the cluster configuration:
 
 - **Data structure**.
   - Data in Weaviate follows a class-property structure. Data objects can be queried by their class and properties with GraphQL.
@@ -129,15 +126,21 @@ There are currently three main functions in a GraphQL request: "Get{}", "Explore
 
 ## gRPC API support
 
-Alongside the RESTful and GraphQL APIs, Weaviate serves a gRPC API. gRPC is built on HTTP/2 and Protocol Buffers, which makes it faster and more efficient than sending the equivalent request as JSON over HTTP. It was introduced in Weaviate `v1.19.0` and has been considered stable since `v1.23.7`.
+Alongside the RESTful and GraphQL APIs, Weaviate serves a gRPC API. gRPC uses HTTP/2 and Protocol Buffers, which can reduce serialization and transport overhead compared with equivalent JSON requests. End-to-end performance still depends on the operation, payload, network, and workload. It was introduced in Weaviate `v1.19.0` and has been considered stable since `v1.23.7`.
 
 gRPC carries most of the search and batch import traffic that the client libraries generate, so a Weaviate deployment usually exposes a gRPC port (`50051` by default, configurable with the `GRPC_PORT` [environment variable](/deploy/configuration/env-vars/index.md)) in addition to the REST port. Client coverage is not uniform: the [Python](/weaviate/client-libraries/python/index.mdx), [TypeScript](/weaviate/client-libraries/typescript/index.mdx), [Java](/weaviate/client-libraries/java/index.mdx), and [C#](/weaviate/client-libraries/csharp.mdx) clients use gRPC for queries and batch operations. The [Go](/weaviate/client-libraries/go/index.md) client uses gRPC for queries and batch imports. The [Go client `v5`](/weaviate/client-libraries/go/go-v5.md) uses it for batch imports and reaches gRPC search through its experimental API.
 
 For the Protobuf definitions and for ways to call the API without a client library, see the [gRPC API reference](../api/grpc.md).
 
+Browser and compatible edge applications can use the [TypeScript web client](../client-libraries/typescript/web-client.mdx) over [gRPC-Web](../api/grpc.md#grpc-web), available from v1.38.3 on the REST port rather than the native gRPC port. Its supported operations differ from native clients; in particular, server-side batching is unavailable.
+
+## MCP interface
+
+Weaviate also includes an MCP server for compatible AI-agent clients, using Streamable HTTP at `/v1/mcp` on the REST endpoint. Collection discovery, searches, and optional writes depend on configuration and permissions. See [MCP configuration](../configuration/mcp-server.mdx) for availability and access controls; this is not an API-parity or universal-default guarantee.
+
 ## Weaviate Console
 
-The [Weaviate Console](/go/console?utm_content=others) is a dashboard to manage Weaviate clusters from WCD, and access Weaviate instances running elsewhere. You can use the Query Module to make GraphQL queries.
+The [Weaviate Console](/go/console?utm_content=others) is a dashboard to manage Weaviate clusters from WCD, and access Weaviate instances running elsewhere. Where GraphQL is enabled and available, the Query Module can make GraphQL queries. The screenshot below illustrates that legacy query interface, not universal current cluster availability.
 
 ![GraphQL Query Module in Weaviate Console](./img/console-capture.png)
 

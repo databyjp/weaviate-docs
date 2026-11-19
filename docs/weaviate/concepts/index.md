@@ -73,7 +73,7 @@ You can learn more about the individual components in this figure by following t
 
 **[User-facing interfaces](./interface.md)**
   * Design philosophy behind user-facing APIs
-  * Role of the REST and GraphQL APIs
+  * Role of the REST, gRPC, and GraphQL APIs
 
 **[Replication architecture](./replication-architecture/index.md)**
   * About replication

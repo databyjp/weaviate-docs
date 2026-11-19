@@ -26,7 +26,7 @@ In other words, you can perform a search - for example, a vector search - and th
 
 ### An example GraphQL query with a reranker
 
-You can use reranking in a GraphQL query as follows:
+For current client examples, see [reranking search results](../search/rerank.md). The retained GraphQL example below applies only where GraphQL is enabled and available; see [GraphQL migration guidance](../api/graphql/migration.mdx).
 
 ```graphql
 {
@@ -53,7 +53,7 @@ You can use reranking in a GraphQL query as follows:
 }
 ```
 
-This query retrieves 10 results from the `JeopardyQuestion` class, using a hybrid search with the query “flying”. It then re-ranks the results using the `answer` property, and the query “floating”.
+This query retrieves 10 results from the `JeopardyQuestion` class, using a vector search with the query “flying”. It then re-ranks the results using the `answer` property, and the query “floating”.
 
 You can specify which `property` of the `JeopardyQuestion` class you want to pass to the reranker. Note that here, the returned `score` will include the score from the reranker.
 
