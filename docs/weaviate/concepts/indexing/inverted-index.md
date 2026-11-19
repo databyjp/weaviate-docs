@@ -10,10 +10,10 @@ Inverted indexes in Weaviate map values (like words or numbers) to the objects t
 
 ## How Weaviate creates inverted indexes
 
-Understanding Weaviate's indexing architecture is crucial for optimizing performance and resource usage. Weaviate creates **individual inverted indexes for each property and each index type**. This means:
+Understanding Weaviate's indexing architecture is crucial for optimizing performance and resource usage. Weaviate creates **individual inverted indexes for each enabled, applicable property/index-type combination**. This means:
 
-- Each property in your collection gets its own dedicated inverted index(es)
-- Meta properties (like creation timestamps) also get their own separate inverted indexes
+- Indexed properties get their own dedicated inverted index(es)
+- Optional metadata indexes (like creation timestamps) are separate when enabled
 - A single property can have multiple inverted indexes if it supports multiple index types
 - All aggregations and combinations across properties happen at query time, not at index time
 
@@ -50,7 +50,7 @@ import BlockmaxWand from '/_includes/feature-notes/blockmax-wand.mdx';
 
 The BlockMax WAND algorithm is a variant of the WAND algorithm that is used to speed up BM25 and hybrid searches. It organizes the inverted index in blocks to enable skipping over blocks that are not relevant to the query. This can significantly reduce the number of documents that need to be scored, improving search performance.
 
-If you are experiencing slow BM25 (or hybrid) searches and use a Weaviate version prior to `v1.30`, try migrating to a newer version that uses the BlockMax WAND algorithm to see if it improves performance. If you need to migrate existing data from a previous version of Weaviate, follow the [v1.30 migration guide](/deploy/migration/weaviate-1-30.md).
+BlockMax searchable buckets and legacy Map buckets can coexist; a server upgrade alone does not establish that every property has migrated. The [v1.30 migration guide](/deploy/migration/weaviate-1-30.md) describes a historical, version-specific procedure. In v1.40, the old inverted-index debug migration routes were removed; property reindexing is a separate opt-in **preview** capability, not a generally available migration recipe.
 
 :::note Scoring changes with BlockMax WAND
 
@@ -66,7 +66,7 @@ There are three inverted index types in Weaviate:
 - `indexFilterable` - a match-based index for fast [filtering](../filtering.md) by matching criteria
 - `indexRangeFilters` - a range-based index for [filtering](../filtering.md) by numerical ranges
 
-Each inverted index can be set to `true` (on) or `false` (off) on a property level. The `indexSearchable` and `indexFilterable` indexes are on by default, while the `indexRangeFilters` index is off by default.
+At property creation, applicable index types can be enabled or disabled. `indexFilterable` defaults to on for supported data types; `indexSearchable` defaults to on for `text`/`text[]`, not every property type. `indexRangeFilters` defaults to off. Existing indexes can be [dropped](../../manage-collections/inverted-index.mdx#drop-an-inverted-index), removing index data but retaining stored property values. Enabling or rebuilding indexes on existing data is distinct from an ordinary schema-flag update; v1.40 property reindexing is opt-in **preview**.
 
 The filterable indexes are only capable of [filtering](../filtering.md), while the searchable index can be used for both searching and filtering (though not as fast as the filterable index).
 
@@ -103,14 +103,14 @@ You can also enable an inverted index to search [based on timestamps](/weaviate/
 
 Timestamps are currently indexed using the `indexFilterable` index.
 
-## Collections without indexes
+## Disabling user-property indexes
 
-If you don't want to set an index at all, this is possible too. To create a collection without any indexes, skip indexing on the collection and on the properties.
+You can disable user-property inverted indexes and skip a configured legacy vector index, as illustrated below. Internal indexes, including object-ID indexing, remain. From v1.40, omitting all vector parameters creates a vectorless collection; that is different from the legacy `skip` configuration shown here.
 
 <details>
-  <summary>Example collection configuration without inverted indexes -  JSON object</summary>
+  <summary>Example disabling user-property inverted indexes and legacy vector indexing</summary>
 
-An example of a complete collection object without inverted indexes:
+An example collection definition with user-property inverted indexes disabled:
 
 ```js
 {
@@ -201,19 +201,20 @@ This means the tokenization method controls the "granularity" of matching. For e
 Weaviate provides several tokenization methods optimized for different data types:
 
 **Standard methods:**
-- **`word`** (default): Splits on non-alphanumeric characters, lowercases. Best for typical text.
+- **`word`** (built-in fallback unless overridden by server configuration): Splits on non-alphanumeric characters, lowercases. Best for typical text.
 - **`lowercase`**: Splits on whitespace, lowercases. Preserves symbols like `@`, `_`, `-`.
 - **`whitespace`**: Splits on whitespace, preserves case and symbols. For case-sensitive data.
 - **`field`**: No splitting - entire value is one token. For exact matching.
 
-**Language-specific methods** (for languages without word boundaries):
+- **`trigram`**: Produces overlapping character trigrams; built in, with no dictionary enablement flag.
+
+**Optional dictionary tokenizers** (for languages without word boundaries):
 - **`gse`**: Japanese text segmentation using the [`gse`](https://pkg.go.dev/github.com/go-ego/gse) tokenizer (Japanese dictionary)
 - **`gse_ch`**: Chinese text segmentation using the same `gse` tokenizer with a Chinese dictionary
-- **`trigram`**: Splits into character trigrams for CJK languages
 - **`kagome_ja`**: Japanese morphological analysis
 - **`kagome_kr`**: Korean morphological analysis
 
-These language-specific tokenizers are not loaded by default. Enable them with the corresponding environment variables (`ENABLE_TOKENIZER_GSE`, `ENABLE_TOKENIZER_GSE_CH`, `ENABLE_TOKENIZER_KAGOME_JA`, `ENABLE_TOKENIZER_KAGOME_KR`).
+The four dictionary tokenizers above are not loaded by default. Enable them with the corresponding environment variables (`ENABLE_TOKENIZER_GSE`, `ENABLE_TOKENIZER_GSE_CH`, `ENABLE_TOKENIZER_KAGOME_JA`, `ENABLE_TOKENIZER_KAGOME_KR`).
 
 See the [tokenization configuration reference](../../config-refs/collections.mdx#tokenization) for detailed specifications and behavior examples.
 
@@ -236,7 +237,7 @@ Text properties can opt in to **accent folding** via the `textAnalyzer` block. W
 
 The implementation uses [Unicode NFD decomposition](https://unicode.org/reports/tr15/) (covering acute, grave, circumflex, tilde, dieresis, caron, cedilla, ogonek, macron, breve, ring, and more) plus an explicit replacement table for single-codepoint letters that do not decompose, such as `ł`, `æ`, `ø`, `ð`, `þ`, `đ`, and `ß`. Together this covers 20+ Latin-script languages, including French, Portuguese, Spanish, German, Polish, Czech, Croatian, and Icelandic.
 
-Accent folding composes with every tokenization method: `word`, `lowercase`, `whitespace`, `field`, and `trigram`.
+Analyzer settings support `word`, `lowercase`, `whitespace`, `field`, and `trigram`, not GSE or Kagome tokenizers. A per-property `stopwordPreset` requires `word` tokenization.
 
 #### Per-character exceptions
 
@@ -276,22 +277,18 @@ With `word` tokenization, `"variable_name"` matches `"variable_new_name"` becaus
 
 Keyword searches use BM25f to rank results. Tokenization affects:
 
-1. **Result inclusion**: Only objects with matching tokens appear
-2. **Ranking scores**: More matching tokens = higher scores
+1. **Result inclusion**: Matching tokens and the query's match operator determine eligibility.
+2. **Ranking scores**: Matching terms contribute to BM25 relevance along with term frequency, rarity, property length normalization, and boosts.
 
-For example, searching for `"lois clark"` with `word` tokenization will rank objects containing both words higher than those with just one.
+A document matching both `"lois clark"` tokens is not guaranteed to outrank every document matching only one. Use [keyword match controls](../search/keyword-search.md) when inclusion must require multiple terms.
 
 ### Stop words
 
 Stop words are common words (like "a", "the", "is") that are typically ignored during search. By default, Weaviate uses a standard English stop words list.
 
-After tokenization, stop words in queries behave as if they're not present for matching purposes:
-- Filter for `"a computer mouse"` behaves like `"computer mouse"`
-- Stop words still affect BM25f ranking scores
+For `word` tokenization, ordinary query-time matching removes configured stopwords; for example, a value filter for `"a computer mouse"` behaves like `"computer mouse"`. A filter containing only removed stopwords can error. `Like` uses a separate wildcard-preserving path, so this is not a universal rule for every text predicate. Other tokenizers do not apply this stopword removal.
 
-You can [configure custom stop words](../../config-refs/indexing/inverted-index.mdx#stopwords) in your collection definition.
-
-**Note**: With `field` tokenization, stop words don't apply since the entire field is one token.
+Stopwords remain indexed, so stored lengths/statistics can still affect BM25 scoring; removed query stopwords do not contribute their own term scores. You can [configure stopwords](../../config-refs/indexing/inverted-index.mdx#stopwords) in your collection definition.
 
 #### Custom stopword presets
 

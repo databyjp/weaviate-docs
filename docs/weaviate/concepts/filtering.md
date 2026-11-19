@@ -82,13 +82,13 @@ Earlier Weaviate versions do not accept `pathseer` as a filter strategy. Before 
 
 The `indexFilterable` index speeds up match-based filtering through use of Roaring Bitmaps. Roaring Bitmaps employ various strategies to add efficiencies, whereby it divides data into chunks and applies an appropriate storage strategy to each one. This enables high data compression and set operations speeds, resulting in faster filtering speeds for Weaviate.
 
-If you are dealing with a large dataset, this will likely improve your filtering performance significantly and we therefore encourage you to migrate and re-index.
+The split between filterable and searchable text indexes was introduced in v1.19. That historical migration is not a blanket recommendation to reindex current datasets based on size alone.
 
 In addition, our team maintains our underlying Roaring Bitmap library to address any issues and make improvements as needed.
 
 #### `indexFilterable` for `text` properties
 
-A roaring bitmap index for `text` properties is implemented using two separate (`filterable` & `searchable`) indexes, which replaces the existing single index. You can configure the new `indexFilterable` and `indexSearchable` parameters to determine whether to create the roaring set index and the BM25-suitable Map index, respectively. (Both are enabled by default.)
+For `text` properties, `indexFilterable` controls a Roaring Bitmap index for filtering, while `indexSearchable` controls a separate searchable inverted index for BM25 and hybrid keyword retrieval. Both default to enabled for text. Searchable storage can use BlockMax buckets or legacy Map buckets; upgrading the server does not by itself prove every property has migrated.
 
 :::info Read more
 To learn more about Weaviate's roaring bitmaps implementation, see the [in-line documentation](https://pkg.go.dev/github.com/weaviate/weaviate/adapters/repos/db/lsmkv/roaringset).
@@ -100,7 +100,7 @@ The `indexRangeFilters` index is a range-based index for filtering by numerical 
 
 Internally, rangeable indexes are implemented as roaring bitmap slices. This data structure limits the index to values that can be stored as 64 bit integers.
 
-`indexRangeFilters` is only available for new properties. Existing properties cannot be converted to use the rangeable index.
+Ordinary property creation can enable `indexRangeFilters`; changing a schema flag alone does not backfill an existing property. In v1.40, a separate opt-in **preview** property-reindex capability can enable a rangeable index on an existing eligible property. This is not unrestricted GA schema/type mutation; see [inverted-index lifecycle](./indexing/inverted-index.md#configure-inverted-indexes).
 
 ## Recall on Pre-Filtered Searches
 
