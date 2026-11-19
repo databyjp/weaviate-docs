@@ -298,18 +298,18 @@ Vectors that aren't currently in cache are added to the cache if there is still 
 
 This feature relates to the vector index, specifically only to the HNSW and HFresh indexes.
 
-Asynchronous indexing can be enabled by opting in as follows:
+Configuration depends on the deployment:
 
-- Open-source users can do this by setting the `ASYNC_INDEXING` environment variable to `true`.
-- Weaviate Cloud users can do this by toggling the `Enable async indexing` switch in the Weaviate Cloud Console.
+- For self-managed deployments, enable asynchronous indexing by setting [`ASYNC_INDEXING`](/deploy/configuration/env-vars/index.md#ASYNC_INDEXING) to `true`. The generic default is `false`.
+- Weaviate Cloud documents asynchronous indexing as enabled by default and not user-configurable. See [Default cluster settings](/cloud/manage-clusters/default-settings.mdx#weaviate-database-settings) for the managed-service configuration.
 
 With synchronous indexing, the vector index is updated in lockstep with the object store. Updating an HNSW index can be an expensive operation, especially as the size of the index grows. As a result, the indexing operation can be the bottleneck in the system, slowing down the time for user requests to be completed.
 
 When asynchronous indexing is enabled, all vector indexing operations go through a queue. This applies to not only batch imports, but also to single object imports, deletions, and updates.
 
-This means that the object store can be updated quickly to finish performing user requests while the vector index updates in the background. Asynchronous indexing is especially useful for importing large amounts of data.
+This decouples completion of object operations from vector-index completion. It can improve import acceptance throughput while indexing continues in the background, but an import response does not mean that all imported vectors are searchable.
 
-This means that there will be a short delay between object creation and the object being available for vector search using the HNSW index. The number of objects in the queue can be monitored per node [as shown here](/deploy/configuration/status.md#cluster-node-data).
+The delay between object creation and vector-search visibility depends on workload and indexing backlog. Do not assume a fixed maximum delay. Updates and deletions also pass through the indexing queue. Monitor the queue per node [as shown here](/deploy/configuration/status.md#cluster-node-data), and measure searchable completion separately from import response time. Queue count alone does not establish elapsed visibility lag.
 
 :::info Changes in `v1.28`
 

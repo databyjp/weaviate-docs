@@ -108,7 +108,7 @@ SQ and BQ both have optional vector caches. Use these configurable caches to loa
 
 Importing and compressing vectors takes slightly longer than importing uncompressed vectors, but this is a one time cost. In contrast, loading a compressed index into memory is faster since there is less data to load. This means restarts are faster.
 
-Starting in v1.22, Weaviate has an optional, [asynchronous indexing](/weaviate/config-refs/indexing/vector-index.mdx#asynchronous-indexing) feature which effectively speeds up the import process. Consider enabling asynchronous indexing to improve imports.
+[Asynchronous indexing](/weaviate/concepts/vector-index#asynchronous-indexing), introduced in v1.22, decouples object operations from vector-index completion. It can improve import acceptance throughput, but an import response does not mean the vectors are searchable. Measure searchable completion and monitor indexing backlog as well as import response time. Self-managed deployments can enable it with `ASYNC_INDEXING`; Weaviate Cloud documents it as enabled by default and not user-configurable in [Default cluster settings](/cloud/manage-clusters/default-settings.mdx#weaviate-database-settings).
 
 ### Activate compression
 
