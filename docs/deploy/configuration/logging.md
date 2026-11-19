@@ -130,7 +130,7 @@ TENANT_ACTIVITY_WRITE_LOG_LEVEL=info
 
 ### Authorization Audit Logging
 
-When [RBAC authorization](/deploy/configuration/configuring-rbac.md) is enabled, Weaviate automatically logs authorization decisions and role management operations for audit purposes. These logs capture:
+When [RBAC authorization](/deploy/configuration/configuring-rbac.md) is enabled, normal audited authorization calls and role management operations automatically emit structured logs. These logs capture:
 
 - User making the request
 - Action being authorized or performed
@@ -141,7 +141,9 @@ When [RBAC authorization](/deploy/configuration/configuring-rbac.md) is enabled,
 
 #### Authorization decision logs
 
-Authorization decision logs are generated for RBAC-based authorization evaluations. These logs record both successful and denied authorization attempts, making them valuable for security auditing and troubleshooting access issues.
+Normal audited RBAC authorization calls log successful checks at `info` and denied checks at `error`. Internal silent authorization checks do not emit these audit records, and some errors return before a normal decision record is emitted. Keep [`LOG_LEVEL`](#log-level) at `info` or a more verbose level to retain successful-check records; a `warning` or `error` threshold suppresses them.
+
+Authorization records describe permission checks, not successful completion of the authorized action. They are not, by themselves, an exhaustive ledger of returned documents, snippets, or content disclosed to downstream models. Validate the relevant endpoint and application logging before relying on them for disclosure auditing.
 
 **Key fields:**
 - `user` - The user making the request
@@ -152,7 +154,7 @@ Authorization decision logs are generated for RBAC-based authorization evaluatio
 
 **Example successful authorization:**
 
-In this example, user `root-user` successfully deleted the `TempCollection`:
+In this example, user `root-user` was authorized to delete `TempCollection`. The record does not establish whether the deletion completed:
 
 ```json
 {
@@ -268,7 +270,7 @@ Example role deletion:
 }
 ```
 
-These audit logs are automatically generated when RBAC is enabled - no additional configuration is required.
+Log emission is automatic for these audited operations when RBAC is enabled, subject to the configured log level. Configure and validate collection, delivery, retention, access protection, and any tamper-evidence requirements separately.
 
 ## Messages with a docs link
 

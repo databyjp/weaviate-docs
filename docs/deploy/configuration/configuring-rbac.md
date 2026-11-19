@@ -141,7 +141,7 @@ The role cannot be assigned, revoked, deleted or recreated through the Weaviate 
 
 ## Authorization audit logging
 
-When RBAC is enabled, Weaviate automatically logs all authorization decisions for audit purposes. These logs capture:
+When RBAC is enabled, normal audited authorization calls automatically emit structured permission-check records. Internal silent authorization checks do not emit these audit records, and some errors return before a normal decision record is emitted. These logs capture:
 
 - User making the request
 - Action being authorized
@@ -150,7 +150,9 @@ When RBAC is enabled, Weaviate automatically logs all authorization decisions fo
 - Source IP address (optional)
 - Resource being accessed
 
-Audit logs are written at the `info` level for successful authorizations and `error` level for denials. No additional configuration is required - audit logging is automatic when RBAC is enabled.
+Successful authorization checks are logged at `info` and denied checks at `error`. Keep `LOG_LEVEL` at `info` or a more verbose level to retain successful-check records; a `warning` or `error` threshold suppresses them. Configure and validate log collection, delivery, retention, access protection, and any tamper-evidence requirements separately.
+
+These records describe permission checks, not successful completion of the authorized action. They are not, by themselves, an exhaustive ledger of returned documents, snippets, or content disclosed to downstream models.
 
 For details on log format, how to collect and analyze authorization audit logs, and best practices for log retention, see the [Logging configuration page](./logging.md#authorization-audit-logging).
 
