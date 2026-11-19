@@ -6,7 +6,7 @@ image: og/docs/concepts.jpg
 # tags: ['architecture', 'resource', 'cpu', 'memory', 'gpu']
 ---
 
-Weaviate scales well for large projects. Smaller projects, less than 1M objects, do not require resource planning. For medium and large-scale projects, you should plan how to get the best performance from your resources. While you design you system, keep in mind CPU and memory management. CPU and memory are the primary resources for Weaviate instances. Depending on the modules you use, GPUs may also play a role.
+Plan resources from vector count and dimensions, index type and compression, object and property indexes, workload, and replication—not object count alone. Even small collections can require substantial resources with high-dimensional or multiple vectors. Include CPU, memory, and storage capacity and I/O in your planning. Depending on the modules you use, GPUs may also play a role.
 
 
 ## Limit available resources
@@ -28,60 +28,56 @@ These settings help in optimizing Weaviate's performance by balancing resource u
 The CPU has a direct effect on query and import speed, but does not affect dataset size.
 :::
 
-Vector search is the most CPU intensive process in Weaviate operations. Queries are CPU-bound, but imports are also CPU-bound because imports rely on vector search for indexing. Weaviate uses the HNSW (Hierarchical Navigable Small World) algorithm to index vectors. You can [tune the HNSW index](../config-refs/indexing/vector-index.mdx) on a per collection basis in order to maximize performance for your primary use case.
+HNSW vector search and insertion can be CPU-intensive when the required vectors and graph are resident in memory. Complete requests can also be limited by vector-cache misses, object retrieval, storage I/O, or indexing backlog. Other index types, such as HFresh, have different memory and I/O trade-offs. You can [tune the HNSW index](../config-refs/indexing/vector-index.mdx) on a per collection basis for your primary use case.
 
 To use multiple CPUs efficiently, create multiple shards for your collection. For the fastest imports, create multiple shards even on a single node.
 
-Each insert, or search, is single-threaded. However, if you make multiple searches or inserts at the same time, Weaviate can make use of multiple threads. [Batch inserts](/weaviate/manage-objects/import) use multiple threads to process data in parallel.
+HNSW graph traversal is largely single-threaded, but a complete request can include parallel work, such as candidate rescoring. Concurrent searches and inserts can also use multiple threads. [Batch inserts](/weaviate/manage-objects/import) use multiple threads to process data in parallel.
 
 ### When to add more CPUs
 
-When CPU utilization is high during importing, add CPUs to increases import speed.
-
-When search throughput is limited, add CPUs to increase the number of queries per second.
+Consider adding CPUs when measurements show that CPU is the bottleneck during import or search. Check cache behavior, storage I/O, and indexing queues before scaling: adding CPUs does not resolve every throughput limit.
 
 ## The role of memory
 
 :::tip Rule of thumb
-Memory determines the maximum supported dataset size. Memory does not directly influence query speed.
+Memory affects resident-index capacity, cache hit rates, and garbage collection. These can affect both latency and throughput.
 :::
 
-The HNSW index must be stored in memory. The memory required is directly related to the size of your dataset. There is no correlation between the size of your dataset and the current query load. You can use [`product quantization (PQ)`](/weaviate/concepts/vector-quantization#product-quantization) to compress the vectors in your dataset and increase the number of vectors you can hold in memory. If memory is your main constraint, the disk-based [HFresh index](/weaviate/concepts/vector-index#hfresh-index) is another option.
+The HNSW graph is stored in memory; vector residency depends on compression and cache settings. Dataset size and query concurrency both matter for memory planning. You can use [`product quantization (PQ)`](/weaviate/concepts/vector-quantization#product-quantization) to reduce vector memory, but compression does not shrink the graph. If memory is your main constraint, the disk-based [HFresh index](/weaviate/concepts/vector-index#hfresh-index) is another option.
 
-Weaviate lets you configure a limit to the number of vectors held in memory in order to prevent unexpected Out-of-Memory ("OOM") situations. The default value is one trillion (`1e12`) objects per collection. To adjust the number of objects, update the value of [`vectorCacheMaxObjects`](../config-refs/indexing/vector-index.mdx) in your index settings.
+[`vectorCacheMaxObjects`](../config-refs/indexing/vector-index.mdx) configures an entry-count threshold for each applicable vector-index cache instance. It is not a byte limit or a guarantee against Out-of-Memory ("OOM") situations. Account for separate shard and named-vector index instances and their replicas, along with graph memory, other indexes, and runtime allocations.
 
 Weaviate also uses [memory-mapped files](https://en.wikipedia.org/wiki/Memory-mapped_file) for data stored on disks. Memory-mapped files are efficient, but disk storage is much slower than in-memory storage.
 
 ### Which factors drive memory usage?
 
-The HNSW vector index is the primary driver of memory usage. These factors influence the amount of memory Weaviate uses:
+For HNSW deployments, include these components when planning memory:
 
-- **The total number of object vectors**. The number of vectors is important, but the raw size of the original objects is not important. Only the vector is stored in memory. The size of the original text or other data is not a limiting factor.
-- **The `maxConnections` HNSW index setting**. Each object in memory has at most [`maxConnections`](../config-refs/indexing/vector-index.mdx) connections per layer. Each of the connections uses 8-10B of memory. Note that the base layer allows for `2 * maxConnections`.
+- **Vectors and their representations**. Count dimensions, data type, compression, and the number of vectors per object. Cache settings determine which applicable representations remain resident.
+- **The HNSW graph**. [`maxConnections`](../config-refs/indexing/vector-index.mdx) limits connections per upper layer; the base layer allows `2 * maxConnections`. Resident graph memory also includes nodes, layer metadata, and allocation overhead, so a fixed bytes-per-connection multiplier is not a complete estimate.
+- **Objects and property indexes**. Objects need not all reside in the Go heap, but their size and the indexes used for filtering and keyword search affect storage and the memory working set.
+- **Caches, runtime, and temporary work**. Include operating-system file cache, query concurrency, indexing buffers and queues, and import or recovery peaks.
 
 ### An example calculation
 
 :::note
-The following calculation assumes that you want to hold all vectors in memory. For a hybrid approach that combines in memory and on-disk storage, see [Vector Cache](#vector-cache) below.
+This example covers one logical copy of one uncompressed HNSW vector index, with one vector per object and all vectors cached. It is not total process or cluster memory sizing. For cache trade-offs, see [Vector Cache](#vector-cache) below.
 :::
 
-To estimate your memory needs, use the following rule of thumb:
+A rough starting heuristic for an uncompressed HNSW index is:
 
-`Memory usage = 2 * (the memory footprint of all vectors)`
+`Index planning heuristic = 2 * (the raw float32 vector bytes)`
 
-For example, consider a model that has one million 384-dimensional vectors of type `float32`.
+For one million 384-dimensional vectors of type `float32`:
 
-- The memory requirement for a single vector is: `384 * 4 B = 1536 B`.
+- A single vector contains `384 * 4 B = 1536 B` of raw values.
+- The raw arrays contain `1e6 * 1536 B = 1.536 GB` (about `1.431 GiB`).
+- Doubling gives `3.072 GB` (about `2.861 GiB`) as a starting heuristic, not a measured resident-memory requirement or peak bound.
 
-- The memory requirement for one million objects is: `1e6 * 1536 B = 1.5G B`
+Here, GB means decimal gigabytes and GiB means binary gibibytes. The heuristic does not separately size graph topology and allocations, object and property indexes, file cache, runtime overhead, or transient work. It does not apply to compressed HNSW, flat, or HFresh indexes. Measure these components and peak headroom for your workload before selecting capacity.
 
-The rule of thumb says to double the memory requirement. The total memory requirement for one million 384-dimensional vectors of type `float32` is: `2 * 1e6 * 1536 B = 3 GB`.
-
-For a more accurate calculation, include a factor for the [`maxConnections`](../config-refs/indexing/vector-index.mdx) setting instead of multiplying the base requirement by two.
-
-For example, if `maxConnections` is 64 and the other values are the same, a more accurate memory estimate is `1e6 * (1536B + (64 * 10)) = 2.2 GB`.
-
-The estimate that includes `maxConnections` is smaller than the rule of thumb estimate. However, the `maxConnections` estimate doesn't account for garbage collection. Garbage collection adds overhead that is explained in the next section.
+For a deployment estimate, account for each shard and vector index and the replicas placed on each node. Do not treat the memory summed across all copies as a per-node requirement.
 
 ## Effects of garbage collection
 
@@ -91,13 +87,13 @@ Weaviate is written in Go, which is a garbage-collected language. This means som
 - [Out-of-memory issues](#out-of-memory-issues-due-to-garbage-collection)
 
 ### Memory overhead for the garbage collector
-The memory calculation that includes `maxConnections` describes the system state at rest. However, while Weaviate imports vectors, additional memory is allocated and eventually freed by the garbage collector. Since garbage collection is an asynchronous process, this additional memory must also be accounted for. The 'rule of thumb' formula accounts for garbage collection.
+During imports and queries, Weaviate allocates temporary memory that is eventually freed by the garbage collector. Since garbage collection is asynchronous, leave headroom above the measured resident working set. The amount depends on allocation rate, concurrency, and runtime settings; the 2× index heuristic above does not guarantee sufficient garbage-collection or peak headroom.
 
 ### Out-of-Memory issues due to garbage collection
 In rare situations - typically on large machines with very high import speeds - Weaviate can allocate memory faster than the garbage collector can free it. When this happens, the system kernel can trigger an `out of memory kill (OOM-Kill)`. This is a known issue that Weaviate is actively working on.
 
 ### Data import
-To avoid out-of-memory issues during imports, set `LIMIT_RESOURCES` to `True` or configure the `GOMEMLIMIT` environment variable. For details, see [Environment variables](/deploy/configuration/env-vars/index.md).
+To manage Go runtime memory pressure during imports, set `LIMIT_RESOURCES` to `True` or configure `GOMEMLIMIT`. These settings do not replace workload sizing or guarantee that the process cannot run out of memory. For details, see [Environment variables](/deploy/configuration/env-vars/index.md).
 
 ## Strategies to reduce memory usage
 
@@ -107,7 +103,7 @@ The following tactics can help to reduce Weaviate's memory usage:
 
 - **Reduce the dimensionality of your vectors.** The most effective approach to reducing memory size, is to reduce the number of dimensions per vector. If you have high dimension vectors, consider using a model that uses fewer dimensions. For example, a model that has 384 dimensions uses far less memory than a model with 1536 dimensions.
 
-- **Reduce the number of [`maxConnections`](../config-refs/indexing/vector-index.mdx) in your HNSW index settings**. Each object in memory has up to `maxConnections` connections. Each of those connections uses 8-10B of memory. To reduce the overall memory footprint, reduce `maxConnections`.
+- **Reduce [`maxConnections`](../config-refs/indexing/vector-index.mdx) in your HNSW index settings**. This reduces the connection budget per layer, including the base-layer budget of `2 * maxConnections`, and can reduce graph memory. The actual saving depends on graph occupancy and representation.
 
 Reducing `maxConnections` adversely affects HNSW recall performance. To mitigate this effect, increase one or both of the `efConstruction` and `ef` parameters.
 
@@ -118,9 +114,9 @@ Reducing `maxConnections` adversely affects HNSW recall performance. To mitigate
 
 ## Vector Cache
 
-For optimal search and import performance, all previously imported vectors need to be held in memory. The size of the vector cache is specified by the [`vectorCacheMaxObjects`](../config-refs/indexing/vector-index.mdx) parameter in the collection definition. By default this limit is set to one trillion (`1e12`) objects when you create a new collection.
+For HNSW workloads, keeping the searched vector representations in memory avoids storage lookups. The [`vectorCacheMaxObjects`](../config-refs/indexing/vector-index.mdx) parameter in the collection definition sets an entry-count threshold for each applicable index cache, defaulting to one trillion (`1e12`). Separate shards and named-vector indexes have separate instances, and replicas add copies. This is not a collection-wide or process-wide memory cap, and cache maintenance is not an instantaneous allocation limit.
 
-You can reduce the size of `vectorCacheMaxObjects`, but a disk lookup for a vector is orders of magnitudes slower than memory lookup. Only reduce the size of `vectorCacheMaxObjects` with care and as a last resort.
+Reducing `vectorCacheMaxObjects` can introduce storage lookups and cache churn. The performance impact depends on the working set, file-cache state, and storage. Test changes under representative import and query loads.
 
 Generally we recommend that:
 - During import set `vectorCacheMaxObjects` high enough that all vectors can be held in memory. Each import requires multiple searches. Import performance drop drastically when there isn't enough memory to hold all of the vectors in the cache.

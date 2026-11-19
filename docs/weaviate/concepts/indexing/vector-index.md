@@ -116,16 +116,11 @@ HNSW is an in-memory index, where each node in the graph as well as each edge be
 
 This means that the size of the index in memory is directly proportional to the number of vectors in the index, as well as the number of connections between vectors.
 
-The size of an HNSW index is dominated by the number of vectors; take a look at the table below for an example:
+Vector memory depends on dimensions, data type, compression, and cache settings. Graph memory depends on connections, layers, node metadata, and allocation overhead. Layer zero allows up to `2 * maxConnections`; upper layers allow `maxConnections` per node. A fixed bytes-per-edge multiplier does not capture the full resident graph cost. See [Resource planning](../resources.md#an-example-calculation) for a scoped sizing example.
 
-| Component | Size derivation | Typical size | Size @1M vectors | Size @100M vectors |
-| --- | --- | --- | --- | --- |
-| Node | 4B (float) x N dimensions | 2-12kB | 2-12GB | 200-1200GB |
-| Edge | 10B x 20 connections | 200B | 200MB | 20GB |
+[Quantization](../vector-quantization.md) reduces vector memory, not graph memory. The graph can therefore become a larger share of memory after compression. Alternatively, the disk-based [HFresh index](#hfresh-index) keeps posting-list contents on disk while retaining its centroid index and other metadata in memory.
 
-As you can see, the memory requirements of an HNSW index can quickly become a bottleneck. This is where [quantization](../vector-quantization.md) can be used to reduce the size of the index in memory. Alternatively, the disk-based [HFresh index](#hfresh-index) keeps only a compressed centroid index in memory, which can dramatically reduce the memory footprint.
-
-HNSW is very fast, memory efficient, approach to similarity search. The memory cache only stores the highest layer instead of storing all of the data objects in the lowest layer. When the search moves from a higher layer to a lower one, HNSW only adds the data objects that are closest to the search query. This means HNSW uses a relatively small amount of memory compared to other search algorithms.
+HNSW traversal visits only a subset of nodes, moving from sparse upper layers toward layer zero. This reduces distance evaluations; it does not mean that only the highest graph layer is resident. The in-memory graph includes layer-zero and upper-layer adjacency, while vector representations are managed separately through the applicable cache and compression settings.
 
 Have another look at the diagram; it demonstrates how the HNSW algorithm searches. The search vector in the top layer connects to a partial result in layer one. The objects in layer one lead HNSW to the result set in layer zero. This allows HNSW to skip objects that are unrelated to the search query.
 
@@ -256,7 +251,7 @@ HFresh works by:
 
 This approach can provide memory efficiency benefits for large datasets while maintaining good search performance. The key trade-off is between memory usage and search recall, controlled by parameters like `searchProbe` (number of posting lists to search) and `replicas` (number of posting lists each vector is added to).
 
-Only the centroid index stays in memory, compressed with 8-bit [rotational quantization (RQ)](../vector-quantization.md#rotational-quantization). The posting lists are stored on disk, compressed with 1-bit RQ. A query searches the in-memory centroid index to pick a few relevant postings, reads only those postings from disk, and rescores the top candidates against the uncompressed vectors. Because only a small subset of the data is read per query, disk I/O stays bounded and latency stays predictable as the dataset grows. HFresh also rebalances its posting lists in the background as data changes, so it does not require periodic full index rebuilds.
+The centroid index stays in memory, compressed with 8-bit [rotational quantization (RQ)](../vector-quantization.md#rotational-quantization). Posting-list contents are stored on disk, compressed with 1-bit RQ. Version and posting metadata, buffers, caches, and runtime state also consume RAM. A query searches the in-memory centroid index to select relevant postings, reads those postings, and rescores the top candidates against the uncompressed vectors. This limits the data searched per query, but does not guarantee fixed I/O or latency as the dataset grows: search settings, recall targets, cache state, storage performance, and concurrent load matter. HFresh also rebalances its posting lists in the background as data changes, so it does not require periodic full index rebuilds.
 
 HFresh is particularly well-suited for:
 
@@ -286,7 +281,7 @@ For the configuration parameters, see [Multi-vector embeddings on HFresh](../../
 
 ## Vector cache considerations
 
-For optimal search and import performance, previously imported vectors need to be in memory. A disk lookup for a vector is orders of magnitudes slower than memory lookup, so the disk cache should be used sparingly. However, Weaviate can limit the number of vectors in memory. By default, this limit is set to one trillion (`1e12`) objects when a new collection is created.
+For HNSW workloads, keeping searched vector representations in memory avoids storage lookups. `vectorCacheMaxObjects` sets an entry-count threshold for each applicable vector-index cache, defaulting to one trillion (`1e12`). The collection setting is instantiated separately for shards and named-vector indexes, with additional copies for replicas. It is not a byte budget or a cap on total collection, process, or cluster memory. Cache maintenance is not an instantaneous allocation limit. See [Resource planning](../resources.md#vector-cache) for sizing considerations.
 
 During import set `vectorCacheMaxObjects` high enough that all vectors can be held in memory. Each import requires multiple searches. Import performance drops drastically when there isn't enough memory to hold all of the vectors in the cache.
 
