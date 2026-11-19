@@ -20,8 +20,8 @@ This vector database benchmark is designed to measure and illustrate Weaviate's 
 
 To make the most of this vector database benchmark, you can look at it from different perspectives:
 
-- **The overall performance** – Review the [benchmark results](#benchmark-results) to draw conclusions about what to expect from Weaviate in a production setting.
-- **Expectation for your use case** – Find the dataset closest to your production use case, and estimate Weaviate's expected performance for your use case.
+- **Reported performance** – Review the [benchmark results](#benchmark-results) as observations under the documented test conditions, subject to the provenance limitation below.
+- **Starting point for your use case** – Find the dataset closest to your production use case, then measure your own workload rather than treating these results as production capacity estimates.
 - **Fine Tuning** – If you don't get the results you expect. Find the optimal combinations of the configuration parameters (`efConstruction`, `maxConnections` and `ef`) to achieve the best results for your production configuration. (See [HNSW Configuration Tips](/weaviate/config-refs/indexing/vector-index.mdx#hnsw-configuration-tips))
 
 <!---
@@ -58,12 +58,13 @@ For each set of parameters, we've run 10,000 requests, and we measured the follo
 
 By request, we mean:
 An unfiltered vector search across the entire dataset for the given test. All
-latency and throughput results represent the end-to-end time that your
-users would also experience. In particular, these means:
+latency and throughput results include the request path measured by the benchmark,
+not a guarantee of production user latency. In particular:
 
 * Each request time includes the network overhead for sending the results over the
-  wire. In the test setup, the client and server machines were located in the
-  same VPC.
+  wire. The methodology records client and server in the same VPC, but their
+  placement is not reconciled with the shared-instance description under
+  [Hardware](#hardware).
 * Each request includes retrieving all the matched objects from disk. This is
   a significant difference from `ann-benchmarks`, where the embedded libraries
   only return the matched IDs.
@@ -79,6 +80,14 @@ This benchmark is [open source](https://github.com/weaviate/weaviate-benchmarkin
 Update information
 :::
 --->
+
+:::caution Result provenance
+
+The hardware descriptions on this page are inconsistent: the setup lists a `n4-highmem-16` instance with 16 vCPUs and 128 GB memory, while the FAQ previously attributed throughput to a 30-core machine and identified a GCP `c2` CPU type. Client placement is also ambiguous. A tested Weaviate release and run date are not identified for each result set.
+
+The rows and charts below are retained as reported observations, not independently reproduced measurements. Until the original run artifacts reconcile these details, do not use them for QPS-per-core normalization, hardware-cost comparisons, or capacity extrapolation. Matching manifests need the server and benchmark commits, run date, machine and CPU topology, RAM and storage, client placement, worker count, cache state, workload settings, and raw result files.
+
+:::
 
 This section contains datasets modeled after the [ANN Benchmarks](https://github.com/erikbern/ann-benchmarks). Pick a dataset that is closest to your production workload:
 
@@ -237,24 +246,9 @@ This benchmark is [open source](https://github.com/weaviate/weaviate-benchmarkin
 
 ![Setup with Weaviate and benchmark machine](/img/docs/weaviate_benchmark_setup.png)
 
-This benchmark test uses one GCP instances to run both Weaviate and the Benchmark scripts:
+The recorded setup describes one GCP `n4-highmem-16` instance with 16 vCPUs and 128 GB memory running both Weaviate and the benchmark scripts. This conflicts with the other hardware descriptions summarized under [Result provenance](#benchmark-results). The diagram is a setup illustration, not evidence that each result used that topology.
 
-* a `n4-highmem-16` instance with 16 vCPU cores and 128 GB memory.
-
-:::info Here's why we chose the `n4-highmem-16`:
-
-* It is large enough to show that Weaviate is a highly concurrent [vector search engine](https://weaviate.io/blog/what-is-a-vector-database).
-* It scales well while running thousands of searches across multiple threads.
-* It is small enough to represent a typical production case without inducing
-  high costs.
-:::
-
-Based on your throughput requirements, it is very likely that you will run Weaviate
-on a considerably smaller or larger machine in production.
-
-We have outlined in the [Benchmark FAQs](#what-happens-if-i-run-with-fewer-or-more-cpu-cores-than-on-the-example-test-machine)
- what you should expect when altering the configuration or
-setup parameters.
+The machine type and client placement for each result set remain unverified. Do not select a production machine by scaling these QPS figures; see the [CPU-scaling FAQ](#what-happens-if-i-run-with-fewer-or-more-cpu-cores-than-on-the-example-test-machine).
 
 ### Experiment Setup
 
@@ -308,8 +302,7 @@ can also lead to congestion, which would further decrease the concurrent
 throughput. As a result, you cannot perform a single-threaded benchmark and
 extrapolate what the numbers would be like in a multi-threaded setting.
 
-All throughput numbers ("QPS") outlined in this benchmark are actual
-multi-threaded measurements on a 30-core machine, not estimations.
+The QPS figures are reported multi-threaded measurements, not estimates. Their machine and worker-count provenance still needs reconciliation as described under [Benchmark Results](#benchmark-results).
 
 ### What is a p99 latency?
 
@@ -321,10 +314,10 @@ considerably better time, but the remaining 10 might see a significantly worse
 time.
 
 Percentile-based latencies are used to give a more precise indication. A
-99th-percentile latency - or "p99 latency" for short - indicates the slowest
-request that 99% of requests experience. In other words, 99% of your users will
-experience a time equal to or better than the stated value. This is a much
-better guarantee than a mean value.
+99th-percentile latency - or "p99 latency" for short - describes a percentile
+of the measured request distribution. It provides information about the observed
+tail that a mean does not, but a sampled benchmark p99 is not a guarantee that
+99% of production users will experience that latency.
 
 In production settings, requirements - as stated in support plans - are often a
 combination of throughput and a percentile latency. For example, the statement
@@ -341,10 +334,7 @@ p95-latencies in our measurements.
 
 ### What happens if I run with fewer or more CPU cores than on the example test machine?
 
-The benchmark outlines a QPS per core measurement. This can help you make a
-rough estimation of how the throughput would vary on smaller or larger
-machines. If you do not need the stated throughput, you can run with fewer CPU
-cores. If you need more throughput, you can run with more CPU cores.
+Do not derive QPS per core from these results while their hardware provenance is unresolved. Even with a verified machine configuration, throughput need not scale linearly with core count. Measure your workload at the required recall, concurrency, and tail latency on the intended hardware.
 
 Adding more CPUs reaches a point of diminishing returns because of synchronization mechanisms, disk, and memory bottlenecks. Beyond that point, you  should scale horizontally instead of vertically. Horizontal scaling with replication is also available.
 
@@ -360,11 +350,10 @@ memory consumption. This trade-off is highlighted in the benchmark results.
 If you are encountering other numbers in your own dataset, here are a couple of
 hints to look at:
 
-* What CPU architecture are you using? The benchmarks above were run on a GCP
-  `c2` CPU type, which is based on `amd64` architecture. Weaviate also supports
-  `arm64` architecture, but not all optimizations are present. If your machine
-  shows maximum CPU usage but you cannot achieve the same throughput, consider
-  switching the CPU type to the one used in this benchmark.
+* What CPU architecture and instruction sets are you using? CPU type can affect
+  distance-computation performance. Record the CPU model and architecture when
+  comparing results. This page's conflicting hardware descriptions do not
+  establish a verified CPU type to match.
 
 * Are you using an actual dataset or random vectors? HNSW is known to perform
   considerably worse with random vectors than with real-world datasets. This is due
