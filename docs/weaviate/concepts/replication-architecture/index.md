@@ -73,12 +73,12 @@ In this Replication Architecture section, you will find information about:
 
 Database replication refers to keeping a copy of the same data point on multiple nodes of a cluster.
 
-The resulting system is a distributed database. A distributed database consists of multiple nodes, all of which can contain a copy of the data. So if one node (server) goes down, users can still access data from another node. In addition, query throughput can be improved with replication.
+The resulting system is a distributed database. A distributed database consists of multiple nodes, all of which can contain a copy of the data. If enough eligible replicas of every required shard remain healthy and a live entry point is reachable, users can continue accessing data despite a node failure. In addition, query throughput can be improved with replication.
 
 ## CAP Theorem
 
-The primary goal of introducing replication is to improve reliability. [Eric Brewer](https://en.wikipedia.org/wiki/Eric_Brewer_(scientist)) states that there are some limits on reliability for distributed databases, described by the [CAP theorem](https://en.wikipedia.org/wiki/CAP_theorem). The CAP theorem states that a distributed database can only provide two of the following three guarantees:
-* **Consistency (C)** - Every read receives the most recent write or an error, ensuring all nodes see the same data at the same time.
+The primary goal of introducing replication is to improve reliability. [Eric Brewer](https://en.wikipedia.org/wiki/Eric_Brewer_(scientist)) states that there are some limits on reliability for distributed databases, described by the [CAP theorem](https://en.wikipedia.org/wiki/CAP_theorem). During a network partition, a distributed system cannot guarantee both linearizable consistency and availability for every request. CAP distinguishes these properties:
+* **Consistency (C)** - Operations appear to occur in a single order consistent with real time (linearizability); this does not require every physical copy to be identical at every instant.
 * **Availability (A)** - Every request receives a non-error response all the time, without the guarantee that it contains the most recent write.
 * **Partition tolerance (P)** - The system continues to operate despite an arbitrary number of messages being dropped (or delayed) by the network between nodes.
 
@@ -88,15 +88,9 @@ Ideally, you want a database, like Weaviate, to have the highest reliability as 
 
 ### Consistency vs Availability
 
-:::tip
-Only two out of Consistency (C), Availability (A), and Partition tolerance (P) can be guaranteed simultaneously
-
-Given that partition tolerance is required, consider which of the other two are more important for your system.
+:::tip Partition-time trade-off
+When communication is partitioned, preserving a consistency guarantee can require refusing operations that cannot establish it. Accepting operations on disconnected replicas can preserve more availability but permit divergent state. The trade-off is operation-specific, not an unconditional menu of any two properties.
 :::
-
-Only two out of consistency, availability, and partition tolerance can be guaranteed. Since by definition a cluster is a distributed system in which network partitions are present, only two options are left for designing the system: **consistency (C)** or **availability (A)**.
-
-When you prioritize **consistency** over availability, the database will return an error or timeout when it cannot be guaranteed that the data is up to date due to network partitioning. When prioritizing **availability** over consistency, the database will always process the query and try to return the most recent version of data even if it cannot guarantee it is up to date due to network partitioning.
 
 C over A is preferred when the database contains critical data, such as transactional bank account data. For transactional data, you want the data to always be consistent (otherwise your bank balance is not guaranteed to be correct if you make transactions while some nodes (e.g. ATMs) are down).
 
@@ -109,13 +103,13 @@ Weaviate generally follows this latter design, since Weaviate typically deals wi
 Weaviate, as a database, must provide reliable answers to users' requests. As discussed above, database reliability consists of various parts. Below are Weaviate use cases in which replication is desired. For detailed information, visit the [Replication Use Cases (Motivation) page](./motivation.md).
 
 1. **High availability (redundancy)**<br/>
-  With a distributed (replicated) database structure, service will not be interrupted if one server node goes down. The database can still be available, read queries will just be (unnoticeably) redirected to an available node.
+  Replicas can keep operations available when enough eligible replicas of every required shard remain healthy. A live client entry point and, where metadata is needed, a Raft voting majority are also required. Failover and retries can be visible to clients.
 2. **Increased (read) throughput**<br/>
-  Adding extra server nodes to your database setup means that the throughput scales with it. The more server nodes, the more users (read operations) the system will be able to handle. When reading with consistency level of `ONE`, then scaling the replication factor (i.e. how many database server nodes) increases the throughput linearly.
-3. **Zero downtime upgrades**<br/>
-  Without replication, there is a window of downtime when you update a Weaviate instance. This is because the single node needs to stop, update and restart before it's ready to serve again. With replication, upgrades are done using a rolling update, in which at most one node is unavailable at any point in time while the other nodes can still serve traffic.
+  Additional replicas can distribute read work, especially at `ONE`. Scaling depends on workload, placement, traffic distribution, and shared bottlenecks; it is not a guaranteed linear multiplier.
+3. **Rolling upgrades**<br/>
+  Replication can support continued service during rolling upgrades if the remaining replicas and voters meet operational requirements. Follow the [migration guide](/deploy/migration/index.md), including version-specific steps and readiness checks.
 4. **Regional proximity**<br/>
-  When users are located in different regional areas (e.g. Iceland and Australia as extreme examples), you cannot ensure low latency for all users due to the physical distance between the database server and the users. With a distributed database, you can place nodes in different local regions to decrease this latency. This depends on the Multi-Datacenter feature of replication.
+  A [single cluster spanning data centers](./multi-dc.md) can place needed replicas closer to users. Required remote acknowledgments and metadata coordination can still incur WAN latency; geography alone does not guarantee local service or datacenter-failure survival.
 
 
 ## Replication vs. Sharding
@@ -135,7 +129,7 @@ Replication and sharding can be combined in a setup, to improve throughput and a
 
 Weaviate’s cluster metadata changes are managed through Raft to provide consistency across the cluster. (This includes collection definitions and tenant activity statuses.)
 
-From Weaviate `v1.25`, cluster metadata changes are committed using the Raft consensus algorithm. Raft is a leader-based consensus algorithm. A leader node is responsible for cluster metadata changes. Raft ensures that these changes are consistent across the cluster, even in the event of (a minority of) node failures.
+From Weaviate `v1.25`, cluster metadata changes are committed using the Raft consensus algorithm. Raft is a leader-based consensus algorithm. A leader node is responsible for cluster metadata changes. Raft ensures that these changes are consistent across the cluster, while a majority of Raft voting members can communicate. Non-voting nodes do not count toward that majority.
 
 <details>
   <summary>Metadata replication pre-<code>v1.25</code></summary>
@@ -151,11 +145,13 @@ If you are using Weaviate `v1.24` or earlier, you can [upgrade to `v1.25`](/depl
 
 ### Data replication
 
-In Weaviate, availability is generally favored over consistency. Weaviate's data replication uses a leaderless design, which means there are no primary and secondary nodes. When writing and reading data, the client contacts one or more nodes. A load balancer exists between the user and the nodes, so the user doesn't know which node they are talking to (Weaviate will forward internally if a user is requesting a wrong node).
+In Weaviate, availability is generally favored over consistency. Weaviate's data replication uses a leaderless design, which means there are no primary and secondary nodes. Clients can connect directly to a Weaviate node or through an optional load balancer provided by their deployment. The receiving node coordinates supported data operations with the required shard replicas.
 
-The number of nodes that need to acknowledge the read or write (from v1.18) operation is tunable, to `ONE`, `QUORUM` (n/2+1) or `ALL`. When write operations are carried out with consistency level `ALL`, the database works synchronously. If write is not set to `ALL` (possible from v1.18), writing data is asynchronous from the user's perspective.
+Acknowledgment thresholds for supported data operations are tunable to `ONE`, `QUORUM`, or `ALL`. These are thresholds over a shard's routed replicas, not all cluster nodes. In v1.40.5's inspected ordinary object routes, QUORUM requires `floor(N/2)+1` successful answers from the operation-eligible set; ALL requires successful answers from all membership-resolved eligible destinations after a majority-reachability gate. Membership resolution does not guarantee RPC success. See the [version-scoped explanation](./consistency.md#tunable-write-consistency); successful ALL does not prove every configured copy is current.
 
-The number of replicas doesn't have to match the number of nodes (cluster size). It is possible to split data in Weaviate based on collections. Note that this is [different from Sharding](#replication-vs-sharding).
+Writes attempt routed destinations regardless of the acknowledgment threshold. Returning after enough acknowledgments is distinct from [background anti-entropy](./consistency.md#async-replication), all-copy completion, or immediate vector-index visibility.
+
+Each shard has its own replica placement within the cluster, and those sets can differ across a collection. Replication factor is not the total cluster size.
 
 Read more about how replication works in Weaviate in [Philosophy](./philosophy.md), [Cluster Architecture](./cluster-architecture.md) and [Consistency](./consistency.md).
 

@@ -18,7 +18,7 @@ The architecture that guides the principles for Weaviate’s replication systems
 
 Based on the above usage patterns, and keeping the [CAP theorem](./index.md#cap-theorem) trade-offs in mind, Weaviate implements two different architectures for cluster metadata and data replication.
 
-1. **Cluster metadata replication** is based on the [Raft consensus algorithm](https://raft.github.io/), which provides log-based consistency operations coordinated by an elected leader. This means that cluster metadata changes can be made even in the event of (a minority of) node failures.
+1. **Cluster metadata replication** is based on the [Raft consensus algorithm](https://raft.github.io/), which provides log-based consistency operations coordinated by an elected leader. Metadata changes require a communicating majority of Raft voting members; non-voting nodes do not count toward this majority. This is separate from data-replica acknowledgment requirements.
 
 2. **Data replication** is based on a leaderless design with tunable consistency. This means there is no central leader or primary node that will replicate to follower nodes. Weaviate’s data replication architecture **prefers availability over consistency**. Nevertheless, individual requests might have stricter consistency requirements than others. For those cases, Weaviate offers both [tunable read and write consistency](./consistency.md).
 

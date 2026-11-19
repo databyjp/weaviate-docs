@@ -12,9 +12,11 @@ Weaviate can be scaled horizontally by being run on a set of multiple nodes in a
 
 ### Shards
 
-A collection in Weaviate comprises of one or more "shards", which are the basic units of data storage and retrieval. A shard will contain its own vector index, inverted indexes, and object store. Each shard can be hosted on a different node, allowing for distributed data storage and processing.
+A collection in Weaviate comprises of one or more "shards", which are the basic units of data storage and retrieval. A shard contains an object store, configured property indexes, and zero or more configured vector indexes. Each named vector has its own index configuration. Each shard can be hosted on a different node, allowing for distributed data storage and processing.
 
 ![Shards explained](./img/shards_explained.png)
+
+*Illustration of a vector-indexed collection; the depicted vector index is not mandatory or necessarily the only vector index in a shard.*
 
 The number of unique shards in a single-tenant collection can only be set at collection creation time. In most cases, letting Weaviate manage the number of shards is sufficient. But in some cases, you may want to manually configure the number of shards for performance or data distribution reasons.
 
@@ -22,11 +24,13 @@ In a multi-tenant collection, each tenant consists of one shard. This means that
 
 ![Shards in collections](./img/shards_in_collections.png)
 
+*Illustrative shard organization; actual vector and property indexes depend on collection configuration.*
+
 ### Replicas
 
 Depending on the setup, each shard can have one or more "replicas", to be hosted on different nodes. This is referred to as a "high availability" setup, where the same data is available on multiple nodes. This allows for better read throughput and fault tolerance.
 
-You can set the desired number of replicas, also called a replication factor, in Weaviate. This can be set a global cluster-level default using the [`REPLICATION_MINIMUM_FACTOR` environment variable](/docs/deploy/configuration/env-vars/index.md). It can also be set [per collection](/docs/weaviate/manage-collections/multi-node-setup.mdx#replication-settings), which will override the global default.
+The replication factor sets the desired number of shard copies. [`REPLICATION_MINIMUM_FACTOR`](/deploy/configuration/env-vars/index.md) is an enforced floor and the default when no collection factor is specified. A [collection factor](../manage-collections/multi-node-setup.mdx#replication-settings) must be at least that minimum, subject to available nodes and any configured maximum; it cannot override the floor downward.
 
 ## Motivation to scale Weaviate
 Generally there are (at least) three distinct motivations to scale out horizontally which all will lead to different setups.
@@ -47,15 +51,15 @@ The ability to shard across a cluster was added in Weaviate `v1.8.0`.
 ### Motivation 2: Higher Query Throughput
 When you receive more queries than a single Weaviate node can handle, it is desirable to add more Weaviate nodes which can help in responding to your users' queries.
 
-Instead of sharding across multiple nodes, you can replicate (the same data) across multiple nodes. This process also happens fully automatically and you only need to specify the desired replication factor. Sharding and replication can also be combined.
+Instead of sharding across multiple nodes, you can replicate (the same data) across multiple nodes. Configure replication and verify replica placement; merely adding nodes does not copy existing shards onto them. Sharding and replication can also be combined.
 
 **Solution: Replicate your classes across multiple nodes in a cluster**
 
 ### Motivation 3: High Availability
 
-When serving critical loads with Weaviate, it may be desirable to be able to keep serving queries even if a node fails completely. Such a failure could be either due to a software or OS-level crash or even a hardware issue. Other than unexpected crashes, a highly available setup can also tolerate zero-downtime updates and other maintenance tasks.
+When serving critical loads with Weaviate, it may be desirable to be able to keep serving queries even if a node fails completely. Such a failure could be either due to a software or OS-level crash or even a hardware issue. Replication can also support rolling maintenance when sufficient healthy replicas and capacity remain.
 
-To run a highly available setup, classes must be replicated among multiple nodes.
+Availability requires enough healthy, operation-eligible replicas of every required shard, a reachable client entry point, and a majority of Raft voting members for metadata-dependent operations. For example, three eligible replicas with QUORUM require two successful responses; two replicas with QUORUM require both. See [consistency](./replication-architecture/consistency.md).
 
 **Solution: Replicate your classes across multiple nodes in a cluster**
 
@@ -64,21 +68,21 @@ To run a highly available setup, classes must be replicated among multiple nodes
 The motivation sections above outline when it is desirable to shard your classes across multiple nodes and when it is desirable to replicate your classes - or both. This section highlights the implications of a sharded and/or replicated setup.
 
 :::note
-All of the scenarios below assume that - as sharding or replication is increased - the cluster size is adapted accordingly. If the number of shards or the replication factor is lower than the number of nodes in the cluster, the advantages no longer apply.*
+Benefits depend on actual placement and sufficient node resources. Nodes hosting none of a collection's relevant replicas do not add capacity for that collection. Adding nodes alone does not redistribute existing shards; use [replica movement](#shard-replica-movement) where appropriate.
 :::
 
 ### Advantages when increasing sharding
 * Run larger datasets
 * Speed up imports.
 
-To use multiple CPUs efficiently, create multiple shards for your collection. For the fastest imports, create multiple shards even on a single node.
+Multiple shards can expose import parallelism, including on one node, but add overhead. Benchmark shard counts for the selected indexes, workload, and available resources rather than assuming more shards yield the fastest import.
 
 ### Disadvantages when increasing sharding
-* Query throughput does not improve when adding more sharded nodes
+* Query fan-out and result merging add overhead; throughput effects depend on query patterns and bottlenecks.
 
 ### Advantages when increasing replication
-* System becomes highly available
-* Increased replication leads to near-linearly increased query throughput
+* Availability can improve when enough eligible replicas remain healthy for each operation.
+* Read throughput can improve when traffic is distributed across replicas; gains depend on consistency, workload, placement, and resource bottlenecks.
 
 ### Disadvantages when increasing replication
 * Import speed does not improve when adding more replicated nodes
@@ -102,9 +106,9 @@ A shard replica can be moved or copied from one node to another. This is useful 
 
 1. **Load Balancing**: If certain nodes are experiencing higher loads than others, moving shard replicas can help distribute the load more evenly across the cluster.
 
-2. **Scaling**: If you need to scale your cluster (e.g., adding more nodes to handle increased load), shard replicas can be moved to the new nodes to ensure that the data is evenly distributed across the cluster.
+2. **Scaling**: If you need to scale your cluster (e.g., adding more nodes to handle increased load), shard replicas can be moved to the new nodes to improve distribution; balance is not automatic or guaranteed.
 
-3. **Node Maintenance or Replacement**: If a node requires maintenance (e.g., hardware upgrades) or replacement, shard replicas can be moved to temporary or replacement nodes to ensure continuous availability during the maintenance window.
+3. **Node Maintenance or Replacement**: If a node requires maintenance (e.g., hardware upgrades) or replacement, shard replicas can be moved to temporary or replacement nodes to support availability during maintenance, provided the remaining replicas and metadata voters meet the operations' requirements.
 
 ## Node Discovery
 
@@ -114,13 +118,13 @@ Weaviate - especially when running as a cluster - is optimized to run on Kuberne
 
 ## Node affinity of shards and/or replication shards
 
-Weaviate tries to select the node with the most available disk space.
+Ordinary new-shard allocation uses disk-aware candidate ordering and distributes replicas across eligible nodes. This includes new tenant shards added to an existing multi-tenant collection, not just collection creation. Specialized placement constraints, such as namespace home-node placement, can restrict candidates.
 
-This only applies when creating a new class, rather than when adding more data to an existing single class.
+Adding objects to an existing shard does not relocate it. Adding nodes also does not rebalance existing shards; use explicit replica movement to change their placement.
 
 ## Consistency and current limitations
 
-* From `v1.25`, Weaviate uses the [Raft consensus algorithm](https://raft.github.io/) for cluster metadata such as collection definitions and tenant activity statuses. Raft is a log-based algorithm coordinated by an elected leader, so cluster metadata changes remain consistent even if a minority of nodes fail, and concurrent schema changes are supported. For details, see [Replication architecture: Cluster metadata](/weaviate/concepts/replication-architecture/consistency.md#cluster-metadata).<br/>If you are a Kubernetes user, see the [`1.25 migration guide`](/deploy/migration/weaviate-1-25.md) before you upgrade. To upgrade, you have to delete your existing StatefulSet.
+* From `v1.25`, Weaviate uses the [Raft consensus algorithm](https://raft.github.io/) for cluster metadata such as collection definitions and tenant activity statuses. Raft is a log-based algorithm coordinated by an elected leader, so metadata progress requires a communicating majority of Raft voting members, not a majority of all cluster nodes, and concurrent schema changes are supported. For details, see [Replication architecture: Cluster metadata](/weaviate/concepts/replication-architecture/consistency.md#cluster-metadata).<br/>If you are a Kubernetes user, see the [`1.25 migration guide`](/deploy/migration/weaviate-1-25.md) before you upgrade. To upgrade, you have to delete your existing StatefulSet.
 * Adding a node to an existing cluster does not by itself change the ownership of existing shards. To rebalance data across nodes, or to drain a node before you remove it, move its shard replicas with [replica movement](/deploy/configuration/replica-movement.mdx) as described in [Shard replica movement](#shard-replica-movement) above.
 
 <details>

@@ -7,12 +7,12 @@ image: og/docs/concepts.jpg
 ---
 
 
-Multi-Data center (Multi-DC) replication enables you to have multiple copies of the data on multiple servers across more than one data center. Weaviate supports running a single cluster across multiple data centers (since `v1.31`), so you can place nodes in different geographic regions for lower latency and keep your data redundant across locations.
+Multi-Data center (Multi-DC) replication enables you to have multiple copies of the data on multiple servers across more than one data center. Weaviate supports running a single cluster across multiple data centers , so you can place replicas in different regions to improve locality and redundancy, subject to actual shard placement and operation requirements.
 
 Multi-DC replication is beneficial if you have user groups spread over different geographical locations (e.g. Iceland and Australia). When you place nodes in different local regions of user groups, latency can be decreased.
-Multi-DC replication also comes with the additional benefit that data is redundant on more physical locations, which means that in the rare case of an entire  data center going down, data can still be served from another location.
+Cross-region replication can provide copies in more than one physical location, but surviving a datacenter loss depends on placement and request requirements.
 
-If all replica nodes are in the same data center, network requests between nodes are cheap and fast, but the whole deployment is at risk if that data center goes down. Spreading a cluster's nodes across data centers removes this single point of failure, so your data remains available even if an entire data center becomes unreachable.
+If all replica nodes are in the same data center, network requests between nodes are cheap and fast, but the whole deployment is at risk if that data center goes down. Spreading nodes across data centers does not itself ensure a cross-region copy of every shard. Verify actual replica placement: each required shard needs enough surviving healthy, eligible replicas for the requested operation, plus a reachable entry point. Metadata progress requires a majority of Raft voting members. A three-voter split of two in one datacenter and one in another cannot retain a majority after losing the two-voter location.
 
 To run a cluster across data centers, tune Weaviate's inter-node networking for the higher-latency, lower-reliability links between regions. See [Running a single cluster across data centers (WAN)](#running-a-single-cluster-across-data-centers-wan) below.
 
@@ -21,6 +21,10 @@ To run a cluster across data centers, tune Weaviate's inter-node networking for 
 ## Running a single cluster across data centers (WAN)
 
 Weaviate can operate a single cluster across data centers (a wide-area network, or WAN) by adjusting its inter-node communication for high-latency, lower-reliability links.
+
+### Availability and placement
+
+WAN mode tunes inter-node communication; it does not configure replication factors, automatically balance regions, or guarantee failover. A local entry point can still require remote replica acknowledgments or metadata coordination. See [consistency](./consistency.md#tunable-write-consistency) for operation-scoped QUORUM/ALL behavior and [replica movement](/deploy/configuration/replica-movement.mdx) for deliberate placement changes.
 
 ### Enabling WAN mode
 
@@ -49,9 +53,11 @@ environment:
   - CLUSTER_BIND_ADDR=0.0.0.0 # Optional; this is already the default bind address
   - CLUSTER_GOSSIP_BIND_PORT=7946
   - CLUSTER_DATA_BIND_PORT=7947
-  - RAFT_BOOTSTRAP_EXPECT=3 # Use an odd number > 1 across DCs for faster, more reliable elections
-  - RAFT_JOIN=203.0.113.20:8300 # Join an existing Raft voter (default Raft port is 8300)
+  - RAFT_BOOTSTRAP_EXPECT=3 # Illustrative three-voter bootstrap; majority is two
+  - RAFT_JOIN=weaviate-0:8300,weaviate-1:8300,weaviate-2:8300 # Cluster node names, not IP addresses
 ```
+
+The three `RAFT_JOIN` names must match the nodes' `CLUSTER_HOSTNAME` values and resolve through cluster membership. Configure each node's own advertised address. Permit peer traffic on the configured gossip/data ports, Raft transport (default `8300`), and internal Raft RPC (default `8301`). An odd voter count does not by itself guarantee datacenter-loss tolerance or faster elections.
 
 ### Notes
 
