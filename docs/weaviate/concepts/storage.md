@@ -10,9 +10,9 @@ Weaviate is a persistent and fault-tolerant database. This page gives you an ove
 
 The components mentioned on this page aid Weaviate in creating some of its unique features:
 
-* Each write operation is immediately persisted and also tolerant to application and system crashes.
+* Write-ahead logs support recovery, but acknowledgment, buffer flushing, and synchronization to durable media are different stages. Process crashes and OS, power, or storage failures have different durability implications.
 * On a vector search query, Weaviate returns the entire object (in other databases sometimes called a "document"), not just a reference, such as an ID.
-* When combining structured search with vector search, filters are applied prior to performing the vector search. This means that you will always receive the specified number of elements as opposed to post-filtering when the final result count is unpredictable.
+* When combining structured search with vector search, filters are applied prior to performing the vector search. This avoids discarding an already-limited result list through post-filtering, but returns **up to** the requested limit from eligible indexed objects, not a guaranteed count.
 * Objects and their vectors can be updated or deleted at will, even while reading from the database.
 
 ## Logical Storage Units: Indexes, Shards, Stores
@@ -21,29 +21,29 @@ Each class in Weaviate's user-defined schema leads to the creation of an index i
 
 ### Components of a Shard
 
-Each shard houses three main components:
+A shard groups object storage with its configured indexes:
 
 * An object store, essentially a key-value store
-* An [inverted index](https://en.wikipedia.org/wiki/Inverted_index)
-* A vector index store (plugable, currently a [custom implementation of HNSW](/weaviate/config-refs/indexing/vector-index.mdx#hnsw-index))
+* Applicable, enabled [inverted indexes](https://en.wikipedia.org/wiki/Inverted_index)
+* Zero or more configured [vector indexes](./indexing/vector-index.md); named vector targets have their own indexes
 
 #### Object and Inverted Index Store
 
-Since version `v1.5.0`, the object and inverted store are implemented using an [LSM-Tree approach](https://en.wikipedia.org/wiki/Log-structured_merge-tree). This means that data can be ingested at the speed of memory and after meeting a configured threshold, Weaviate will write the entire (sorted) memtable into a disk segment. When a read request comes in, Weaviate will first check the Memtable for the latest update for a specific object. If it is not present in the memtable, Weaviate will then check all previously written segments starting with the newest. To avoid checking segments which don't contain the desired objects, [Bloom filters](https://en.wikipedia.org/wiki/Bloom_filter) are used.
+Since version `v1.5.0`, the object and inverted store are implemented using an [LSM-Tree approach](https://en.wikipedia.org/wiki/Log-structured_merge-tree). Writes are buffered in memory and recorded in WALs; after a configured threshold, a sorted memtable is written to a disk segment. Actual ingestion throughput depends on workload, I/O, and available resources. When a read request comes in, Weaviate will first check the Memtable for the latest update for a specific object. If it is not present in the memtable, Weaviate will then check all previously written segments starting with the newest. To avoid checking segments which don't contain the desired objects, [Bloom filters](https://en.wikipedia.org/wiki/Bloom_filter) are used.
 
 Weaviate periodically merges smaller, older segments to make larger segments. Since the segments are already sorted, this is a relatively cheap operation. It happens constantly in the background. Fewer, larger segments make lookups more efficient. In the inverted index data is rarely replaced, but it is often appended. Merging means that, instead of checking all past segments and aggregating potential results, Weaviate can check a single segment (or a few large segments) and immediately find all the relevant object pointers. In addition, segments are used to remove earlier versions of an object that are out-dated because of a delete or a more recent update.
 
 Considerations
 
-Object storage and inverted index storage implement the LSM algorithm, they use segmentation. The vector index uses a different storage algorithm. The vector index does not use segmentation.
+Object and inverted-index storage use segmented LSM trees. HNSW persists graph topology through commit logs and snapshots rather than independent searchable graph segments. Other vector layouts differ: flat vectors and HFresh posting lists use LSM-backed buckets, and dynamic starts flat before transitioning to HNSW. HNSW auxiliary data can also use shard buckets; graph persistence is not all vector-related storage.
 
-Weaviate versions before `v1.5.0` use a B+Tree storage mechanism. The LSM method is faster, it works in constant time, and it improves write performance.
+Weaviate versions before `v1.5.0` use a B+Tree storage mechanism. The LSM design buffers writes and batches disk output for efficient ingestion; it does not guarantee constant write latency or throughput.
 
 To learn more about Weaviate's LSM store, see the LSM library documentation in the [Go package repository](https://pkg.go.dev/github.com/weaviate/weaviate/adapters/repos/db/lsmkv)
 
 #### HNSW Vector Index Storage
 
-Each shard contains a vector index that corresponds to the object and inverted index stores. The vector store and the other stores are independent. The vector store does not have to manage segmentation.
+For each configured HNSW target, the shard maintains a graph index alongside object and property storage. The graph is not split into independently searched LSM segments; this description is specific to HNSW, not every supported vector-index type.
 
 By grouping a vector index with the object storage within a shard, Weaviate can make sure that each shard is a fully self-contained unit which can independently serve requests for the data it owns. By placing the vector index next to the object store (instead of within), Weaviate can avoid the downsides of a segmented vector index.
 
@@ -51,29 +51,29 @@ Furthermore, its persistence and loading at startup are optimized through a comb
 
 ### Shard Components Optimizations
 
-Weaviate's storage mechanisms use segmentation for structured/object data. Segments are cheap to merge and even unmerged segments can be navigated efficiently thanks to Bloom filters. In turn, ingestion speed is high and does not degrade over time.
+Weaviate's storage mechanisms use segmentation for structured/object data. Segments are cheap to merge and even unmerged segments can be navigated efficiently thanks to Bloom filters. These mechanisms are designed for efficient ingestion; compaction, dataset changes, workload, and resource pressure still affect performance.
 
-Weaviate keeps the vector index as large as possible within a shard. HNSW indexes cannot be merged efficiently. Querying a single large index is more efficient than sequentially querying many small indexes.
+For HNSW, Weaviate maintains a graph per configured target within a shard. HNSW indexes cannot be merged efficiently. Querying a single large index is more efficient than sequentially querying many small indexes.
 
-To use multiple CPUs efficiently, create multiple shards for your collection. For the fastest imports, create multiple shards even on a single node.
+Multiple shards can expose import parallelism, including on one node, but add overhead. Benchmark shard counts for your indexes and workload rather than assuming more shards guarantee the fastest import.
 
 ### Lazy shard loading
 
-When Weaviate starts, it loads data from all of the shards in your deployment. This process can take a long time. Since every tenant is a shard, multi-tenant deployments with many tenants can have reduced availability after a restart.
+When a node starts, it initializes its eligible local active shards. Inactive/offloaded tenants are not activated by shard loading, and empty or otherwise deferred shards can load on demand. This process can take a long time. Since every tenant is a shard, multi-tenant deployments with many tenants can have reduced availability after a restart.
 
-Lazy shard loading allows you to start working with your data sooner. After a restart, shards load in the background. If the shard you want to query is already loaded, you can get your results sooner. If the shard is not loaded yet, Weaviate prioritizes loading that shard and returns a response when it is ready.
+Lazy shard loading allows you to start working with your data sooner. After a restart, eligible shards can load in the background, subject to warmup settings; deferred shards load on access. If the shard you want to query is already loaded, you can get your results sooner. If the shard is not loaded yet, Weaviate prioritizes loading that shard and returns a response when it is ready.
 
 #### Dynamic lazy shard loading
 
 :::info Added in `v1.36.6`
 :::
 
-Starting in v1.36.6, Weaviate automatically decides **per collection** whether to use lazy shard loading. Auto-detection only applies to **multi-tenant** collections and is based on two thresholds:
+Starting in v1.36.6, Weaviate automatically decides **per collection on each node** whether to use lazy shard loading, unless an explicit loading override applies. Auto-detection only applies to **multi-tenant** collections and is based on two local thresholds:
 
-- **Shard count threshold** ([`LAZY_LOAD_SHARD_COUNT_THRESHOLD`](/docs/deploy/configuration/env-vars/index.md#LAZY_LOAD_SHARD_COUNT_THRESHOLD)): Number of shards (tenants) in a collection. Default: `1000`.
-- **Shard size threshold** ([`LAZY_LOAD_SHARD_SIZE_THRESHOLD_GB`](/docs/deploy/configuration/env-vars/index.md#LAZY_LOAD_SHARD_SIZE_THRESHOLD_GB)): Total shard size for a collection. Default: `100` GB.
+- **Shard count threshold** ([`LAZY_LOAD_SHARD_COUNT_THRESHOLD`](/docs/deploy/configuration/env-vars/index.md#LAZY_LOAD_SHARD_COUNT_THRESHOLD)): Number of local active tenant shards in the collection. Default: `1000`.
+- **Shard size threshold** ([`LAZY_LOAD_SHARD_SIZE_THRESHOLD_GB`](/docs/deploy/configuration/env-vars/index.md#LAZY_LOAD_SHARD_SIZE_THRESHOLD_GB)): Total local shard disk size for the collection. Default: `100` GiB (the setting converts using `1024^3` bytes).
 
-If either threshold is exceeded, that collection's shards are lazy-loaded at startup. Otherwise, shards are loaded eagerly (synchronously) before Weaviate reports ready. Single-tenant collections are always eagerly loaded unless `LAZY_LOAD_SHARD_COUNT_THRESHOLD` is set to `0`, which forces lazy loading for all collections.
+Absent an explicit override, exceeding either local threshold selects lazy loading on that node; otherwise eligible shards load eagerly before readiness. Empty/deferred shards may still load on demand. Explicit settings can override auto-detection: `DISABLE_LAZY_LOAD_SHARDS=true` forces eager loading, while a count threshold of `0` forces lazy loading for all collections, including single-tenant collections. See the [loading settings](/deploy/configuration/env-vars/index.md) for deployment configuration.
 
 This change improves reliability during rolling restarts and upgrades. Eager loading eliminates the increased query and ingestion latency that lazy loading can introduce for smaller deployments during rollouts.
 
@@ -93,9 +93,11 @@ Prior to v1.36.6, lazy shard loading was enabled by default for all collections.
 
 Both the LSM stores used for object and inverted storage, as well as the HNSW vector index store make use of memory at some point of the ingestion journey. To prevent data loss on a crash, each operation is additionally written into a **[Write-Ahead-Log (WAL)](https://martinfowler.com/articles/patterns-of-distributed-systems/wal.html)** (also known as a *commit log*). WALs are append-only files that are very efficient to write to and that are rarely a bottleneck for ingestion.
 
-By the time Weaviate has responded with a successful status to your ingestion request, an LSM store WAL entry will have been created. If a WAL entry could not be created - for example because the disks are full - Weaviate will respond with an error to the insert or update request. The HNSW vector index keeps its own commit log, described [below](#hnsw-snapshots). It is written on the same request path, and the two differ in when they are synced to disk.
+By the time Weaviate has responded with a successful status to your ingestion request, an LSM store WAL entry will have been created. If a WAL entry could not be created - for example because the disks are full - Weaviate will respond with an error to the insert or update request. The HNSW graph has its own commit log, described [below](#hnsw-snapshots). With synchronous vector indexing, graph updates occur on the originating request path. With [asynchronous indexing](./indexing/vector-index.md#asynchronous-indexing), vector work enters a persistent queue and graph/log updates occur later. Accepted object writes and completed vector-search visibility are distinct.
 
-The LSM stores will try to flush a segment on an orderly shutdown. Only if the operation is successful, will the WAL be marked as "complete". This means that if an unexpected crash happens and Weaviate encounters an "incomplete" WAL, it will recover from it. As part of the recovery process, Weaviate will flush a new segment based on the WAL and mark it as complete. As a result, future restarts will no longer have to recover from this WAL.
+Flushing a WAL buffer to the operating system is not the same as `fsync` to durable media. A successful ingestion response does not mean every WAL was individually synchronized for that write. WAL recovery supports process-crash recovery, but does not guarantee survival of every acknowledged write through OS, power, or storage failures.
+
+The LSM stores try to flush segments on orderly shutdown. After an unexpected stop, recovery replays surviving WAL records. A suitable final WAL that can be faithfully replayed may be adopted as the active memtable/log and continue receiving writes. Otherwise, recovered data is flushed into one or more segments and the covered WAL is removed after the recovered output is committed. Reusing an active WAL means a later restart can legitimately replay it again.
 
 For the HNSW vector index, the Write-Ahead-Log (WAL) is a critical component for disaster recovery and persisting the most recent changes. The cost in building up an HNSW index is in figuring out where to place a new object and how to link it with its neighbors. The WAL contains only the result of those calculations.
 
@@ -109,7 +111,7 @@ import HnswSnapshots from '/_includes/feature-notes/hnsw-snapshots.mdx';
 
 <HnswSnapshots/>
 
-A snapshot represents a point-in-time state of the HNSW index. When Weaviate starts, it loads the most recent snapshot and replays only the commit log entries written after it. This significantly reduces startup time, because the number of entries that have to be replayed no longer grows with the age of the index.
+A snapshot represents a point-in-time state of an HNSW graph; it is not an independent backup of the collection. When Weaviate starts, it loads the most recent snapshot and replays only the commit log entries written after it. This significantly reduces startup time, because the number of entries that have to be replayed no longer grows with the age of the index.
 
 The commit log records every change to the index as it happens. Entries are written to the log as batches are processed, and a log file is synced to disk when it is rotated. Even with a fresh snapshot, Weaviate typically still has to load at least one subsequent commit log file.
 
@@ -135,7 +137,7 @@ The environment variables that configured snapshots before `v1.39` are deprecate
 
 #### Snapshot configuration before `v1.39` {#pre-v1-39-configuration}
 
-In `v1.31` through `v1.38`, snapshots are an optional feature layered on top of the commit log rather than part of it, and the `PERSISTENCE_HNSW_SNAPSHOT_*` environment variables control when Weaviate creates them. Snapshots are enabled by default starting in `v1.36`, and disabled by default in `v1.31` through `v1.35`. Weaviate can create one at startup and periodically thereafter, once enough new commit log data has accumulated since the last snapshot. Only commit log files that have been rotated count toward that threshold, so changes still in the active file are not considered until the next rotation. If a snapshot cannot be read in these versions, it is discarded and Weaviate replays the full commit log instead. For the variables themselves, including their defaults and deprecation status, see [`PERSISTENCE_HNSW_DISABLE_SNAPSHOTS`](/deploy/configuration/env-vars/index.md#PERSISTENCE_HNSW_DISABLE_SNAPSHOTS) and the rows that follow it.
+In `v1.31` through `v1.38`, snapshots are an optional feature layered on top of the commit log rather than part of it, and the `PERSISTENCE_HNSW_SNAPSHOT_*` environment variables control when Weaviate creates them. Historical defaults vary by version; consult the reference for the release you operate. Weaviate can create one at startup and periodically thereafter, once enough new commit log data has accumulated since the last snapshot. Only commit log files that have been rotated count toward that threshold, so changes still in the active file are not considered until the next rotation. If a snapshot cannot be read in these versions, it is discarded and Weaviate replays the full commit log instead. For the variables themselves, including their defaults and deprecation status, see [`PERSISTENCE_HNSW_DISABLE_SNAPSHOTS`](/deploy/configuration/env-vars/index.md#PERSISTENCE_HNSW_DISABLE_SNAPSHOTS) and the rows that follow it.
 
 <details>
   <summary>Periodic snapshot conditions and memory requirements</summary>
@@ -154,7 +156,7 @@ In these versions, before creating a new snapshot, Weaviate loads the previous s
 
 ## Conclusions
 
-This page introduced you to the storage mechanisms of Weaviate. It outlined how all writes are persisted to a log before they are acknowledged and outlined the patterns used within Weaviate to make datasets scale well. For structured data, Weaviate makes use of segmentation to keep the write times constant. For the HNSW vector index, Weaviate avoids segmentation to keep query times efficient.
+Object/property storage, vector indexing, and their recovery logs have separate responsibilities. LSM buffering and compaction support efficient writes without guaranteeing constant latency. HNSW graph commit logs and snapshots support graph recovery, while other index types use different storage layouts. Acknowledgment, durable-media synchronization, and vector-search visibility must not be treated as the same event.
 
 ## Questions and feedback
 
