@@ -28,7 +28,7 @@ To enable replication, you can set one or both of the following:
 
 The `REPLICATION_MINIMUM_FACTOR` environment variable sets the minimum replication factor for all collections in the Weaviate instance.
 
-If you set the [replication factor for a collection](#replication-factor-for-a-collection), the collection's replication factor overrides the minimum replication factor.
+When creating a collection, you can specify its [replication factor](#replication-factor-for-a-collection), but it must satisfy the instance-wide minimum. An explicit positive factor below the minimum is rejected. If the replication configuration is omitted, the factor defaults to that minimum.
 
 ### Replication factor for a collection
 
